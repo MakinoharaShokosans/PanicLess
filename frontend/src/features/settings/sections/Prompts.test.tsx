@@ -87,7 +87,6 @@ describe('Prompts Section (双栏宽屏高反差图纸)', () => {
     renderWithClient(<Prompts />);
 
     // Default tab is Tab 1 (preset)
-    expect(screen.getByText(/SRE 核心工作法 \(预置基线\)/i)).toBeInTheDocument();
     expect(screen.getByText('PRESET · PROTECTED')).toBeInTheDocument();
     expect(screen.getByText(/核心协议只读保护/i)).toBeInTheDocument();
 

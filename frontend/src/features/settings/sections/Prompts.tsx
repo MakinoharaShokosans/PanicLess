@@ -9,9 +9,12 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  FileCode,
   RotateCcw,
   Save,
   Search,
+  ShieldCheck,
+  Workflow,
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -291,9 +294,6 @@ function PresetSreViewer() {
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h2 className="font-mono text-[13px] font-semibold text-ink">
-            SRE 核心工作法 (预置基线)
-          </h2>
           <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-mute uppercase tracking-wider">
             PRESET · PROTECTED
           </span>
@@ -303,16 +303,16 @@ function PresetSreViewer() {
             label="在文本中查找 (Ctrl+F)"
             active={showSearch}
             onClick={() => setShowSearch((v) => !v)}
-            className="h-7 w-7"
+            className="h-6 w-6"
           >
-            <Search size={14} />
+            <Search size={13} strokeWidth={1.6} />
           </IconButton>
           <IconButton
             label={copied ? '已复制到剪贴板' : '复制 SRE 基线全文'}
             onClick={handleCopy}
-            className={cn('h-7 w-7', copied && 'text-ok')}
+            className={cn('h-6 w-6', copied && 'text-ok')}
           >
-            {copied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? <Check size={13} strokeWidth={1.6} /> : <Copy size={13} strokeWidth={1.6} />}
           </IconButton>
         </div>
       </div>
@@ -351,7 +351,7 @@ function PresetSreViewer() {
             onScroll={(e) => {
               if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop;
             }}
-            className="h-full w-full flex-1 resize-none overflow-auto whitespace-pre bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none select-text"
+            className="h-full w-full flex-1 resize-none overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none select-text"
           />
         </div>
       </div>
@@ -448,11 +448,11 @@ function CustomRulesEditor() {
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h2 className="font-mono text-[13px] font-semibold text-ink">
-            机房运维与安全约束规范 (Custom Rules)
-          </h2>
           <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-mute uppercase tracking-wider">
             WORKSPACE · EDITABLE
+          </span>
+          <span className="font-mono text-[11.5px] font-medium text-ink">
+            机房运维与安全约束规范 (Custom Rules)
           </span>
           {dirty ? (
             <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
@@ -469,29 +469,32 @@ function CustomRulesEditor() {
             label="查找 (Ctrl+F)"
             active={showSearch}
             onClick={() => setShowSearch((v) => !v)}
-            className="h-7 w-7"
+            className="h-6 w-6"
           >
-            <Search size={14} />
+            <Search size={13} strokeWidth={1.6} />
           </IconButton>
           <IconButton
             label="恢复机房初始模板"
             onClick={() => setResetting(true)}
-            className="h-7 w-7"
+            className="h-6 w-6"
           >
-            <RotateCcw size={14} />
+            <RotateCcw size={13} strokeWidth={1.6} />
           </IconButton>
-          <IconButton
-            label="保存规则 (Ctrl+S)"
+          <button
+            type="button"
+            aria-label="保存规则 (Ctrl+S)"
             disabled={!dirty || !content.trim()}
-            className={cn(
-              'h-7 px-2 font-mono text-xs',
-              dirty && 'bg-ink text-white hover:bg-ink/80 dark:bg-white dark:text-ink',
-            )}
             onClick={handleSave}
+            className={cn(
+              'inline-flex h-6 items-center gap-1 rounded border border-line px-2 font-mono text-[11px] transition-colors',
+              dirty
+                ? 'bg-ink text-white hover:bg-ink/80 dark:bg-white dark:text-ink'
+                : 'opacity-50 cursor-not-allowed text-mute',
+            )}
           >
-            <Save size={14} className="mr-1" />
+            <Save size={12} strokeWidth={1.6} />
             <span>保存</span>
-          </IconButton>
+          </button>
         </div>
       </div>
 
@@ -533,7 +536,7 @@ function CustomRulesEditor() {
               if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop;
             }}
             placeholder="在此为生产机房编写特定约束（例如指定网段、跳过自检策略、值班交接声明）..."
-            className="h-full w-full flex-1 resize-none overflow-auto whitespace-pre bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none"
+            className="h-full w-full flex-1 resize-none overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none"
           />
         </div>
       </div>
@@ -653,11 +656,11 @@ function InternalPipelineEditor({ pipelineName }: { pipelineName: string }) {
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h2 className="font-mono text-[13px] font-semibold text-ink">
-            {pipeline.title} ({pipeline.name}.md)
-          </h2>
           <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-mute uppercase tracking-wider">
             INTERNAL · PIPELINE
+          </span>
+          <span className="font-mono text-[11.5px] font-medium text-ink">
+            {pipeline.title} ({pipeline.name}.md)
           </span>
           {d?.customized && (
             <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400">
@@ -670,30 +673,33 @@ function InternalPipelineEditor({ pipelineName }: { pipelineName: string }) {
             label="查找 (Ctrl+F)"
             active={showSearch}
             onClick={() => setShowSearch((v) => !v)}
-            className="h-7 w-7"
+            className="h-6 w-6"
           >
-            <Search size={14} />
+            <Search size={13} strokeWidth={1.6} />
           </IconButton>
           <IconButton
             label="恢复官方初始版本"
             disabled={!d?.customized && !dirty}
             onClick={() => setResetting(true)}
-            className="h-7 w-7"
+            className="h-6 w-6"
           >
-            <RotateCcw size={14} />
+            <RotateCcw size={13} strokeWidth={1.6} />
           </IconButton>
-          <IconButton
-            label="保存管道修改"
+          <button
+            type="button"
+            aria-label="保存管道修改"
             disabled={!dirty || over || save.isPending || !text.trim()}
-            className={cn(
-              'h-7 px-2 font-mono text-xs',
-              dirty && !over && 'bg-ink text-white hover:bg-ink/80 dark:bg-white dark:text-ink',
-            )}
             onClick={() => save.mutate()}
+            className={cn(
+              'inline-flex h-6 items-center gap-1 rounded border border-line px-2 font-mono text-[11px] transition-colors',
+              dirty && !over
+                ? 'bg-ink text-white hover:bg-ink/80 dark:bg-white dark:text-ink'
+                : 'opacity-50 cursor-not-allowed text-mute',
+            )}
           >
-            <Save size={14} className="mr-1" />
+            <Save size={12} strokeWidth={1.6} />
             <span>保存</span>
-          </IconButton>
+          </button>
         </div>
       </div>
 
@@ -731,7 +737,7 @@ function InternalPipelineEditor({ pipelineName }: { pipelineName: string }) {
             onScroll={(e) => {
               if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop;
             }}
-            className="h-full w-full flex-1 resize-none overflow-auto whitespace-pre bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none"
+            className="h-full w-full flex-1 resize-none overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words bg-transparent px-3 py-2.5 font-mono text-[12px] leading-relaxed text-ink outline-none"
           />
         </div>
       </div>
@@ -795,8 +801,8 @@ export function Prompts() {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {/* 顶部控制栏：28px 物理分段选择器 + 轻量胶囊化 KV CACHE 微标 */}
-      <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3">
+      {/* 顶部控制栏：单行合并 (flex items-center justify-between h-9 mb-3) */}
+      <div className="mb-3 flex h-9 shrink-0 items-center justify-between gap-3">
         {/* 28px 高反差物理分段选择器 */}
         <div className="relative inline-flex h-[28px] items-center rounded-md border border-line bg-card p-0.5 shrink-0">
           <button
@@ -811,8 +817,8 @@ export function Prompts() {
                 : 'text-mute hover:text-ink',
             )}
           >
-            <span>🛡️</span>
-            <span>SRE 核心工作法 (预置)</span>
+            <ShieldCheck size={13} strokeWidth={1.6} className="shrink-0" />
+            <span>SRE 核心工作法</span>
           </button>
           <button
             type="button"
@@ -826,8 +832,8 @@ export function Prompts() {
                 : 'text-mute hover:text-ink',
             )}
           >
-            <span>📝</span>
-            <span>自定义机房规则 (编辑)</span>
+            <FileCode size={13} strokeWidth={1.6} className="shrink-0" />
+            <span>自定义机房规则</span>
           </button>
           <div className="relative" ref={dropdownRef}>
             <button
@@ -842,15 +848,16 @@ export function Prompts() {
                   : 'text-mute hover:text-ink',
               )}
             >
-              <span>⚙️</span>
+              <Workflow size={13} strokeWidth={1.6} className="shrink-0" />
               <span>
                 {activeTab === 'internal'
                   ? `内部管道: ${currentInternal.title}`
-                  : '内部管道 ∨'}
+                  : '内部管道'}
               </span>
               <ChevronDown
                 size={11}
-                className={cn('transition-transform duration-150', dropdownOpen && 'rotate-180')}
+                strokeWidth={1.6}
+                className={cn('shrink-0 transition-transform duration-150', dropdownOpen && 'rotate-180')}
               />
             </button>
 
