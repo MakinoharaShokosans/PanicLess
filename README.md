@@ -5,6 +5,64 @@
 
 ---
 
+## 🖥️ 系统界面与交互展示 (Visual Cockpit Showcase)
+
+LinuxOpsPilot 搭载自研的 `omoi-aesthetic` 工业三层景深体系，彻底告别千篇一律的通用对话框，呈现建筑图纸级别的专业 SRE 运维座舱：
+
+### 1. 排障主工作台与任务计划编排 (Main SRE Cockpit & Subtask Planning)
+> **多工具并行诊断、阶段性任务计划实时推进与上下文水线量化监控**
+
+![排障主工作台与任务计划编排](assets/0.png)
+
+- **左侧会话引线**：极简无框垂直时间轴，支持随时切换多运维会话；
+- **核心推理流**：展示 Agent 在执行工具调用前的“现状 / 下一步 / 依据”阶段小结，每个 `bash` 原生命令带状态回执与毫秒级耗时；
+- **右侧任务编排面板**：基于 `update_plan` 拆解的子任务清单（Checklist），随排障深入实时更新打钩与推进进度；
+- **动态上下文水线**：精确可视化系统提示词、工具定义、技能清单、环境记忆与对话记录的 Token 占比与压线阈值。
+
+---
+
+### 2. 权限防御矩阵、人机协同（HITL）审批与网络拓扑雷达 (Guard Matrix & HITL Approval)
+> **三级权限阶梯、高危操作主动拦截与 240px 极坐标端口暴露面大盘**
+
+![权限防御矩阵、人机协同审批与网络拓扑雷达](assets/1.png)
+
+- **操作权限基线（SrePermissionGuard）**：常驻顶部导航栏，支持「只读取证模式 (READ-ONLY)」、「工作区受控读写 (WORKSPACE)」与「高危系统提权 (PRIVILEGED)」无缝切换；
+- **人机协同审批卡片（HitlApprovalCard）**：当 Agent 试图触碰高危命令（如防火墙、网关、进程终止）时，运行时自动挂起并弹出 1px 细线工程卡片，提供完整命令预览、参数白名单机制及“批准 / 拒绝”物理微按键；
+- **极坐标暴露面雷达（SreNetworkStorageDial）**：240px 雷达图透视 0~65535 端口分布，区分外网公网暴露（红点）与本地回环安全回环（绿点），联动高亮展示进程 PID 与安全评级。
+
+---
+
+### 3. 高危系统提权审计与工具卡片深度取证详情 (Privileged Mode Audit & Tool Details)
+> **顶栏朱红警戒线、输入审计红框与展开的工具调用详情**
+
+![高危系统提权审计与工具详情](assets/2.png)
+
+- **全局提权警戒态**：进入高危提权模式后，视口顶部与输入框同步常驻 1px 朱红告警红线（CRITICAL），全量系统命令接受安全审计与二次确认；
+- **展开式工具卡片（ToolCard）**：点击任意命令可展开完整 CMD 命令行、原生 OUTPUT 标准输出，支持长日志自动脱斗截断提示（加载完整输出）与单次调用执行元数据。
+
+---
+
+### 4. SRE 深度巡检交付总结与全阶段任务达成 (SRE Post-Mortem & Completed Pipeline)
+> **6 大子任务全绿闭环、多维度交叉验证推导与遗留决策建议**
+
+![SRE深度巡检交付总结与全阶段任务达成](assets/3.png)
+
+- **结构化诊断推导**：Agent 自主总结前五高耗能进程、提炼出需要人类工程师决策的网络暴露点，并基于 `/proc/diskstats` 给出历史与当前 IO 压力的交叉验证结论；
+- **闭环任务达成**：右侧任务清单 6/6 全绿达成，记录 14 轮对话、25 次工具调用、239.9k Token 消耗与 38 秒总响应时间；
+- **零系统漂移**：明确标明本次巡检全程只读，未对生产系统造成任何未授权变更或服务抖动。
+
+---
+
+### 5. Layer 2 原地几何配置图纸小视窗 (In-place Geometric Settings Modal)
+> **快捷键 `Ctrl + ,` 原地唤出 860×600px 纯白图纸视窗，零页面跳转，原地修改、实时生效**
+
+| 技能中心 (Built-in Skills Management) | 原生工具与安全脱斗阈值 (Tools & Spill Threshold) |
+| :---: | :---: |
+| ![技能中心管理](assets/4.png) | ![原生工具与脱斗阈值](assets/6.png) |
+| **独立控制 5 大 SRE 核心 SOP 技能启闭**<br>纯物理高反差微拨动开关（Toggle），支持原地展开 SOP 规范代码抽屉 | **配置单条 Bash 超时时间与输出自动脱斗落盘阈值**<br>内置 6 大文件与诊断原生工具白名单，防止长日志撑爆模型上下文 |
+
+---
+
 ## 为什么有 LinuxOpsPilot
 
 现有的很多自主 Agent（如以写代码、拉分支、建代码仓库为核心的 Coding Agent）直接用于 Linux 生产运维时存在明显的错位：
@@ -95,7 +153,7 @@ cp .env.example .env     # 填写 DEEPSEEK_API_KEY（或其它 OpenAI 兼容提�
 ### 3. 一键安装依赖与自检
 ```bash
 make install             # 一键同步 Python 虚拟环境与安装前端依赖
-make check               # 运行静态分析 + 类型检查 + 离线回归测试（2000+ 后端单测 + 113 前端单测）
+make check               # 运行静态分析 + 类型检查 + 离线回归测试（2000+ 后端单测 + 137 前端单测）
 ```
 
 ### 4. 启动服务
@@ -226,10 +284,10 @@ LinuxOpsPilot/
   - `tests/test_tools_files.py` / `test_tools_edit_search.py`：路径沙箱与核心禁区安全防御验证；
   - `tests/test_builtin_skills.py`：SRE 技能包元数据与防注入合规校验。
 
-- **前端测试**（21 套测试套件，113+ 项测试全部通过）：
+- **前端测试**（25 套测试套件，137+ 项测试全部通过）：
   ```bash
   cd frontend && pnpm test
-  # 21 passed (21 test files), 113 passed (113 tests)
+  # 25 passed (25 test files), 137 passed (137 tests)
   ```
   - `SreBootSplash.test.tsx` / `SreArtifactDrawer.test.tsx` / `SreTerminalDrawer.test.tsx`：指挥舱核心组件深度测试；
   - `SreNetworkStorageDial.test.tsx` / `SreProductionGuard.test.tsx`：网络暴露面与权限红线防护测试；
