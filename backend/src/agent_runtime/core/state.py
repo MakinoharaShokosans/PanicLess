@@ -20,12 +20,11 @@ PermissionLevel = Literal["read_only", "workspace_write", "full_permissions"]
 
 PERMISSION_LEVELS: tuple[str, ...] = get_args(PermissionLevel)
 
-#: 最近一次修改文件之后的验证情况：none 没改过；unchecked 改了还没运行过命令；
-#: failed / passed 改后最近一条命令失败 / 成功
+#: 修改后的目标验证状态。普通命令成功不会自动证明目标已验证。
 Verification = Literal["none", "unchecked", "failed", "passed"]
 VERIFICATIONS: tuple[str, ...] = get_args(Verification)
 
-CURRENT_SCHEMA_VERSION: Final = 4
+CURRENT_SCHEMA_VERSION: Final = 5
 
 #: 会话草稿的上限（docs/02_runtime/05_plan_and_scratch.md）
 MAX_PLAN_ITEMS: Final = 12
@@ -48,6 +47,30 @@ class FailedAttempt(_Frozen):
     action: str
     failure_reason: str
     conclusion: str
+
+
+class VerificationRecord(_Frozen):
+    goal: str
+    check: str
+    result: Literal["passed", "failed", "inconclusive"]
+    summary: str
+    evidence_call_ids: tuple[str, ...]
+    revision: int
+
+
+class TaskConclusion(_Frozen):
+    status: Literal["completed", "partial", "needs_input", "blocked"]
+    summary: str
+    remaining: tuple[str, ...] = ()
+
+
+class ToolObservation(_Frozen):
+    call_id: str
+    tool: str
+    ok: bool
+    revision: int
+    artifact_id: str = ""
+    changed_state: bool = False
 
 
 class PendingApproval(_Frozen):
@@ -99,6 +122,11 @@ class AgentState:
     fingerprint_history: tuple[str, ...] = ()
     consecutive_blocks: int = 0
     verification: Verification = "none"
+    verification_records: tuple[VerificationRecord, ...] = ()
+    observations: tuple[ToolObservation, ...] = ()
+    work_revision: int = 0
+    conclusion: TaskConclusion | None = None
+    inbox_cursor: int = 0
     # 控制
     pending_approval: PendingApproval | None = None
     approval_decision: ApprovalDecision | None = None
@@ -231,6 +259,11 @@ VALIDATORS: Final[dict[str, _Check]] = {
     "fingerprint_history": _str_tuple,
     "consecutive_blocks": _count,
     "verification": _verification,
+    "verification_records": _typed_tuple(VerificationRecord),
+    "observations": _typed_tuple(ToolObservation),
+    "work_revision": _count,
+    "conclusion": _optional(TaskConclusion),
+    "inbox_cursor": _count,
     "pending_approval": _optional(PendingApproval),
     "approval_decision": _optional(ApprovalDecision),
     "stream_summary": _text,

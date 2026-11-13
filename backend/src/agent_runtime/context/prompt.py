@@ -64,6 +64,7 @@ class PromptAssets:
     recent_facts: tuple[MemoryEntry, ...] = ()
     recent_failures: tuple[FailedAttempt, ...] = ()
     tool_names: tuple[str, ...] = ()
+    related_cases: tuple[MemoryEntry, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +221,7 @@ class PromptAssembler:
                     kind="failed_attempts",
                 )
             )
+        parts += _group("historical_cases", a.related_cases, kind="related_experience")
         return _join(parts)
 
     def _task_data(self) -> str:
@@ -261,6 +263,30 @@ class PromptAssembler:
                 f"  失败尝试：{f.action}；原因：{f.failure_reason}；结论：{f.conclusion}"
                 for f in fails
             ]
+        if state.stream_cut and state.stream_summary:
+            lines.append("独立证据账本（不依赖摘要；笔记为 Agent 陈述）：")
+            lines.append("已确认事实：" + ("；".join(state.facts) or "尚未记录"))
+            lines.append("已排除假设/失败尝试：" + (_failures(state.failed_attempts) or "尚未记录"))
+            pending = [f"{p.id}: {p.title}" for p in state.plan if p.status != "completed"]
+            lines.append("下一步：" + ("；".join(pending) or "核对目标与最终结论"))
+            start = (goal_index(state) or 0) + 1
+            lines.append(
+                f"原始记录：read_task_record(start={start}, limit=10)，"
+                f"已压缩消息范围 [{start}, {start + state.stream_cut})；"
+                "可按 query 或 call_id 查找反证，摘要遗漏不代表证据不存在。"
+            )
+            if state.artifacts:
+                lines.append(
+                    "完整输出出处："
+                    + "、".join(f"artifact://{a}" for a in list(state.artifacts)[:20])
+                )
+                if len(state.artifacts) > 20:
+                    lines.append("其余出处通过 read_artifact() 列出。")
+            for record in state.verification_records:
+                lines.append(
+                    f"验证目标：{record.goal}；检查：{record.check}；结果：{record.result}；"
+                    f"说明：{record.summary}；调用证据：{', '.join(record.evidence_call_ids)}"
+                )
         reminder = _verification_reminder(state)
         if reminder:
             lines.append(reminder)
@@ -341,11 +367,14 @@ _COMMAND_CLIP: Final = 80
 def _verification_reminder(state: AgentState) -> str:
     """证据提醒：只陈述事实，不下指令，也不拦截结束。``none`` 与 ``passed`` 不显示。"""
     if state.verification == "unchecked":
-        return "你修改过文件，此后尚未运行任何命令验证。"
+        return (
+            "改动尚未通过目标验证。运行相关检查后用 record_verification "
+            "记录目标、检查结果和调用证据。"
+        )
     if state.verification == "failed":
         command = _last_command(state)
         tail = f"：{command[:_COMMAND_CLIP]}" if command else ""
-        return f"你修改文件后，最近一条命令失败{tail}。"
+        return f"目标验证失败{tail}。"
     return ""
 
 

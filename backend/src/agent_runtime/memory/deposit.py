@@ -62,7 +62,14 @@ def deposit(
                 continue
             known.add(text)
             new_facts.append(
-                Fact(text, task_id, "untrusted" if tainted else "trusted", "task", now)
+                Fact(
+                    text,
+                    task_id,
+                    "untrusted" if tainted else "trusted",
+                    "task",
+                    now,
+                    "experience" if text.startswith("[experience] ") else "observation",
+                )
             )
 
     seen = {_key(f.attempt) for f in (*memory.failures, *memory.pending_failures)}

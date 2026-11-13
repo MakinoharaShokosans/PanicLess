@@ -25,6 +25,8 @@ from agent_runtime.memory import (
     WorkspaceMemory,
     deposit,
 )
+from agent_runtime.memory.experience import HistoricalCase, fact_text
+from agent_runtime.memory.models import Fact
 
 _REDACTED: Final = "[SECURITY_REDACTED]"
 _SECURITY_PREFIX: Final = "[SECURITY]"
@@ -54,6 +56,7 @@ class SessionContext:
             session_failures=a.session_failures,
             recent_facts=a.recent_facts,
             recent_failures=a.recent_failures,
+            related_cases=a.related_cases,
         )
 
 
@@ -66,6 +69,10 @@ class FinishReport:
 
 def outcome_of(status: str, reason: str = "") -> Outcome:
     """任务终态到沉淀结果。安全终止算失败（不沉淀事实）。"""
+    if status == "failed":
+        return "failed"
+    if status in ("partial", "needs_input", "blocked"):
+        return "terminated"
     if status in ("terminated", "cancelled"):
         return "failed" if reason.startswith(_SECURITY_PREFIX) else "terminated"
     return "success"
@@ -119,7 +126,7 @@ class MemoryFlow:
         self._clock = clock
         self._background_tasks: set[asyncio.Task[None]] = set()
 
-    async def prepare(self, session_id: str) -> SessionContext:
+    async def prepare(self, session_id: str, query: str = "") -> SessionContext:
         memory = await self._store.load_memory(session_id)
         turns = await self._store.turns_after(session_id, memory.watermark)
         if len(turns) < self._window:  # 保底：摘要质量不佳时也不至于完全失去最近的上下文
@@ -128,8 +135,10 @@ class MemoryFlow:
         user_memory = await self._store.get_workspace_memory(workspace_id)
         workspace = await self._store.get_workspace(workspace_id)
 
-        def entries(items: Sequence[object]) -> tuple[MemoryEntry, ...]:
-            return tuple(MemoryEntry(f.text, f.source, f.trust) for f in items)  # type: ignore[attr-defined]
+        def entries(items: Sequence[Fact]) -> tuple[MemoryEntry, ...]:
+            return tuple(MemoryEntry(fact_text(f), f.source, f.trust) for f in items)
+
+        cases = await self._store.search_cases(query)
 
         assets = PromptAssets(
             system="",
@@ -143,11 +152,12 @@ class MemoryFlow:
             session_failures=tuple(f.attempt for f in memory.failures),
             recent_facts=entries(memory.pending_facts),
             recent_failures=tuple(f.attempt for f in memory.pending_failures),
+            related_cases=tuple(MemoryEntry(c.render(), "history", "untrusted") for c in cases),
         )
         return SessionContext(
             history=tuple(_message(t) for t in turns),
             rolling_summary=memory.summary,
-            confirmed_facts=tuple(f.text for f in (*memory.facts, *memory.pending_facts)),
+            confirmed_facts=tuple(fact_text(f) for f in (*memory.facts, *memory.pending_facts)),
             failed_attempts=tuple(f.attempt for f in (*memory.failures, *memory.pending_failures)),
             assets=assets,
         )
@@ -204,10 +214,31 @@ class MemoryFlow:
             dropped.extend(out.dropped)
             return out.memory
 
-        await self._store.update_memory(session_id, apply)
-        task = asyncio.create_task(
-            self._background_compact(session_id, force=any(result_flags))
-        )
+        saved = await self._store.update_memory(session_id, apply)
+        if self._persist:
+            # Only archive accepted, original task notes; never promote a summary into facts.
+            facts = [f for f in (*saved.facts, *saved.pending_facts) if f.task_id == state.task_id]
+            failures = [
+                f for f in (*saved.failures, *saved.pending_failures) if f.task_id == state.task_id
+            ]
+            lines = [fact_text(f) for f in facts]
+            lines += [
+                f"排除/失败尝试：{f.attempt.action}；原因：{f.attempt.failure_reason}；"
+                f"经验：{f.attempt.conclusion}"
+                for f in failures
+            ]
+            if lines:
+                await self._store.save_case(
+                    HistoricalCase(
+                        state.task_id,
+                        session_id,
+                        goal,
+                        state.conclusion.status if state.conclusion is not None else outcome,
+                        self._redact("\n".join(lines), state),
+                        self._clock(),
+                    )
+                )
+        task = asyncio.create_task(self._background_compact(session_id, force=any(result_flags)))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return FinishReport(dropped=tuple(dropped))

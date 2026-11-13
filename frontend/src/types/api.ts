@@ -7,16 +7,49 @@ export type TaskStatus =
   | 'running'
   | 'waiting_for_approval'
   | 'succeeded'
+  | 'partial'
+  | 'needs_input'
+  | 'blocked'
   | 'failed'
   | 'cancelled'
   | 'terminated';
 
 export const TERMINAL_STATUSES: readonly TaskStatus[] = [
   'succeeded',
+  'partial',
+  'needs_input',
+  'blocked',
   'failed',
   'cancelled',
   'terminated',
 ];
+
+export type OutcomeStatus = 'completed' | 'partial' | 'needs_input' | 'blocked';
+
+export interface TaskConclusion {
+  status: OutcomeStatus;
+  summary: string;
+  remaining: string[];
+}
+
+export type VerificationResult = 'passed' | 'failed' | 'inconclusive';
+
+export interface VerificationRecord {
+  goal: string;
+  check: string;
+  result: VerificationResult;
+  summary: string;
+  evidence_call_ids: string[];
+  revision: number;
+}
+
+export interface TaskMessage {
+  task_id: string;
+  message_id: string;
+  content: string;
+  created_at: number;
+  status: 'queued' | 'consumed';
+}
 
 export interface Workspace {
   workspace_id: string;
@@ -90,6 +123,8 @@ export interface Task {
   started_at: number | null;
   finished_at: number | null;
   artifact_count: number;
+  conclusion?: TaskConclusion | null;
+  verification_records?: VerificationRecord[];
 }
 
 export interface DecisionResult {
@@ -108,14 +143,35 @@ export interface WorkspaceMemory {
 export interface SessionMemory {
   summary: string;
   watermark: number;
-  facts: { text: string; task_id: string; trust: string; source: string }[];
-  failures: { action: string; failure_reason: string; conclusion: string; task_id: string }[];
-  pending_facts: { text: string; task_id: string; trust: string; source: string }[];
+  facts: {
+    text: string;
+    task_id: string;
+    trust: string;
+    source: string;
+    created_at?: number;
+    kind?: 'observation' | 'experience';
+  }[];
+  failures: {
+    action: string;
+    failure_reason: string;
+    conclusion: string;
+    task_id: string;
+    created_at?: number;
+  }[];
+  pending_facts: {
+    text: string;
+    task_id: string;
+    trust: string;
+    source: string;
+    created_at?: number;
+    kind?: 'observation' | 'experience';
+  }[];
   pending_failures: {
     action: string;
     failure_reason: string;
     conclusion: string;
     task_id: string;
+    created_at?: number;
   }[];
 }
 

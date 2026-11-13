@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from agent_runtime.core import FailedAttempt, Trust
 
@@ -22,6 +22,7 @@ class Fact:
     #: task（任务内验证）| compressor（压缩器提炼）
     source: str
     created_at: float
+    kind: Literal["observation", "experience"] = "observation"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,11 +31,19 @@ class Fact:
             "trust": self.trust,
             "source": self.source,
             "created_at": self.created_at,
+            "kind": self.kind,
         }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> Fact:
-        return cls(d["text"], d["task_id"], d["trust"], d["source"], float(d["created_at"]))
+        return cls(
+            d["text"],
+            d["task_id"],
+            d["trust"],
+            d["source"],
+            float(d["created_at"]),
+            d.get("kind", "observation"),
+        )
 
 
 @dataclass(frozen=True, slots=True)

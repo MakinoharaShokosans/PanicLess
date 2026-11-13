@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
@@ -250,6 +251,116 @@ class ModelsConfig(_Section):
     fast: TierConfig
 
 
+class RetrievalModelConfig(_Section):
+    """独立 HTTP 模型服务；只保存鉴权变量名，不保存鉴权值。"""
+
+    enabled: bool = False
+    protocol: str = ""
+    endpoint_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    timeout_sec: Annotated[float, Field(gt=0, allow_inf_nan=False, strict=True)] = 30.0
+
+    @model_validator(mode="after")
+    def _enabled_service(self) -> Self:
+        if not self.enabled:
+            return self
+        if not self.protocol or not self.model.strip() or not self.endpoint_url.strip():
+            raise ValueError("启用检索模型服务必须配置 protocol、endpoint_url 与 model")
+        try:
+            url = urlsplit(self.endpoint_url)
+            port = url.port
+        except ValueError:
+            raise ValueError("endpoint_url 必须是完整的 HTTP(S) 请求地址") from None
+        if (
+            url.scheme not in {"http", "https"}
+            or not url.hostname
+            or url.username is not None
+            or url.password is not None
+            or url.fragment
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in self.endpoint_url)
+            or port == 0
+        ):
+            raise ValueError("endpoint_url 必须是无凭据、无片段的完整 HTTP(S) 请求地址")
+        if self.api_key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.api_key_env):
+            raise ValueError("api_key_env 必须是环境变量名，不能填写鉴权值")
+        return self
+
+
+class EmbeddingConfig(RetrievalModelConfig):
+    protocol: Literal["", "openai_embeddings"] = "openai_embeddings"
+    endpoint_url: str = "https://api.openlux.ai/v1/embeddings"
+    model: str = "text-embedding-3-large"
+    api_key_env: str = "PANICLESS_RAG_API_KEY"
+
+
+class RerankConfig(RetrievalModelConfig):
+    protocol: Literal["", "indexed_rerank"] = "indexed_rerank"
+    endpoint_url: str = "https://api.openlux.ai/v1/rerank"
+    model: str = "qwen3-rerank"
+    api_key_env: str = "PANICLESS_RAG_API_KEY"
+
+
+class KnowledgeSource(_Section):
+    source_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    root_path: str = Field(min_length=1)
+    service: str = ""
+    tags: tuple[str, ...] = ()
+    max_file_bytes: PosInt = 2_097_152
+    max_files: PosInt = 1000
+
+
+class ContextExpansionConfig(_Section):
+    enabled: bool = True
+    mode: Literal["adjacent", "section"] = "adjacent"
+    before: Annotated[int, Field(ge=0, le=5)] = 1
+    after: Annotated[int, Field(ge=0, le=5)] = 1
+    same_section_only: bool = True
+    max_chars_per_block: PosInt = 3600
+    max_total_chars: PosInt = 12000
+
+
+class RetrievalConfig(_Section):
+    knowledge_enabled: bool = False
+    persist_dir: str = "retrieval/store"
+    sqlite_path: str = "metadata.sqlite3"
+    chroma_path: str = "chroma"
+    sources: tuple[KnowledgeSource, ...] = ()
+    embedding: EmbeddingConfig = EmbeddingConfig()
+    rerank: RerankConfig = RerankConfig()
+    embedding_revision: str = "1"
+    preprocessing_version: Literal["utf8-lf-v1"] = "utf8-lf-v1"
+    chunker_version: Literal["paragraph-v1"] = "paragraph-v1"
+    chunk_chars: Annotated[int, Field(ge=32, le=100000)] = 1200
+    overlap_chars: NonNegInt = 150
+    embedding_batch_size: Annotated[int, Field(ge=1, le=2048)] = 16
+    vector_candidates: Annotated[int, Field(ge=1, le=1000)] = 20
+    bm25_candidates: Annotated[int, Field(ge=1, le=1000)] = 20
+    rrf_k: PosInt = 60
+    rerank_candidates: Annotated[int, Field(ge=1, le=1000)] = 20
+    default_top_k: PosInt = 5
+    max_top_k: Annotated[int, Field(ge=1, le=1000)] = 10
+    search_timeout_sec: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 15.0
+    index_timeout_sec: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 600.0
+    max_query_chars: PosInt = 10000
+    max_chunks: PosInt = 50000
+    context_expansion: ContextExpansionConfig = ContextExpansionConfig()
+
+    @model_validator(mode="after")
+    def _knowledge_limits(self) -> Self:
+        if self.overlap_chars >= self.chunk_chars:
+            raise ValueError("overlap_chars 必须小于 chunk_chars")
+        if self.default_top_k > self.max_top_k:
+            raise ValueError("default_top_k 必须不大于 max_top_k")
+        keys = [s.source_id for s in self.sources]
+        if len(set(keys)) != len(keys):
+            raise ValueError("source_id 不得重复")
+        for name in ("persist_dir", "sqlite_path", "chroma_path", "embedding_revision"):
+            if not getattr(self, name).strip():
+                raise ValueError(f"{name} 不得为空")
+        return self
+
+
 # ==============================================================================
 # 7 模型网关
 # ==============================================================================
@@ -477,6 +588,7 @@ class BashShellConfig(_Section):
     max_concurrent: PosInt = 4
     artifacts_dir: str = "artifacts"
     stream_chunk_bytes: PosInt = 65536
+    output_max_bytes: int = Field(default=8192, ge=256, le=1_048_576)
     distill_head_lines: PosInt = 20
     distill_tail_lines: PosInt = 30
     distill_max_keyword_lines: PosInt = 200
@@ -570,6 +682,9 @@ class SubagentConfig(_Section):
         "websearch",
         "update_plan",
         "note",
+        "read_task_record",
+        "record_verification",
+        "report_outcome",
         "mcp_describe",
         "mcp_call",
     ]
@@ -609,8 +724,12 @@ class PermissionsConfig(_Section):
         "load_skill",
         "update_plan",
         "note",
+        "read_task_record",
+        "record_verification",
+        "report_outcome",
         "mcp_describe",
         "websearch",
+        "knowledge_search",
         "spawn_subagent",
     ]
     workspace_write_tools: list[str] = ["write_file", "edit_file"]
@@ -779,6 +898,7 @@ class Settings(BaseSettings):
     server: ServerConfig = ServerConfig()
     runtime: RuntimeConfig = RuntimeConfig()
     models: ModelsConfig
+    retrieval: RetrievalConfig = RetrievalConfig()
     llm: LlmConfig = LlmConfig()
     context: ContextConfig = ContextConfig()
     tools: ToolsConfig = ToolsConfig()

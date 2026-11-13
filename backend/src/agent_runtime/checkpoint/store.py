@@ -17,6 +17,7 @@ from typing import Final, Literal, Self
 import aiosqlite
 
 from agent_runtime.checkpoint.errors import CheckpointCorruptError, CheckpointError
+from agent_runtime.checkpoint.tool_journal import ToolJournal
 from agent_runtime.core import (
     AgentState,
     StateDecodeError,
@@ -57,11 +58,20 @@ _MIGRATIONS: Final[tuple[str, ...]] = (
     );
     CREATE INDEX idx_task_checkpoints_status ON task_checkpoints(status);
     """,
+    """
+    CREATE TABLE task_inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX idx_task_inbox_task ON task_inbox(task_id, id);
+    """,
 )
 
 #: 检查点状态列。``finished`` 时 ``outcome`` 说明怎么结束的
 Status = Literal["running", "waiting", "finished"]
-Outcome = Literal["", "succeeded", "cancelled", "terminated"]
+Outcome = Literal["", "succeeded", "partial", "needs_input", "blocked", "cancelled", "terminated"]
 
 _UPSERT: Final = """
 INSERT INTO task_checkpoints
@@ -104,6 +114,10 @@ class CheckpointStore:
         self._path = path
         self._conn: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+
+    @property
+    def journal_path(self) -> Path:
+        return self._path.with_name(self._path.name + ".calls.sqlite3")
 
     # ------------------------------------------------------------------ 生命周期
 
@@ -249,10 +263,40 @@ class CheckpointStore:
             return None
         return StoredStatus(row[0], row[1], row[2])
 
+    async def enqueue_message(self, task_id: str, content: str) -> dict[str, object]:
+        """消息先独立落盘；检查点游标与 transcript 一起提交后才算已消费。"""
+        conn = self._require()
+        created_at = time.time()
+        async with self._lock:
+            try:
+                cursor = await conn.execute(
+                    "INSERT INTO task_inbox(task_id, content, created_at) VALUES (?, ?, ?)",
+                    (task_id, content, created_at),
+                )
+                await conn.commit()
+            except sqlite3.Error as exc:
+                await conn.rollback()
+                raise CheckpointError(f"写入任务消息失败（任务 {task_id}）：{exc}") from exc
+        return {"message_id": cursor.lastrowid, "content": content, "created_at": created_at}
+
+    async def inbox(self, task_id: str, *, after: int = 0) -> list[dict[str, object]]:
+        conn = self._require()
+        try:
+            cursor = await conn.execute(
+                "SELECT id, content, created_at FROM task_inbox "
+                "WHERE task_id = ? AND id > ? ORDER BY id",
+                (task_id, after),
+            )
+            rows = await cursor.fetchall()
+        except sqlite3.Error as exc:
+            raise CheckpointError(f"读取任务消息失败（任务 {task_id}）：{exc}") from exc
+        return [{"message_id": row[0], "content": row[1], "created_at": row[2]} for row in rows]
+
     async def delete(self, task_id: str) -> bool:
         conn = self._require()
         async with self._lock:
             try:
+                await conn.execute("DELETE FROM task_inbox WHERE task_id = ?", (task_id,))
                 cursor = await conn.execute(
                     "DELETE FROM task_checkpoints WHERE task_id = ?", (task_id,)
                 )
@@ -260,6 +304,7 @@ class CheckpointStore:
             except sqlite3.Error as exc:
                 await conn.rollback()
                 raise CheckpointError(f"删除检查点失败（任务 {task_id}）：{exc}") from exc
+        ToolJournal(self.journal_path).delete(task_id)
         return cursor.rowcount > 0
 
     async def list_unfinished(self) -> list[UnfinishedTask]:

@@ -1,0 +1,22 @@
+[
+  {"topic": "01", "kind": "自然语言", "query": "Nginx 网关返回 502 和 504，如何区分上游拒绝连接和超时？"},
+  {"topic": "01", "kind": "错误码", "query": "connect() failed (111: Connection refused) while connecting to upstream"},
+  {"topic": "02", "kind": "自然语言", "query": "磁盘容量还有空闲但创建文件提示空间不足，怎么检查 inode 和只读文件系统？"},
+  {"topic": "02", "kind": "错误码", "query": "ENOSPC Read-only file system"},
+  {"topic": "03", "kind": "自然语言", "query": "日志文件删了，为什么磁盘空间还没释放？"},
+  {"topic": "03", "kind": "错误码", "query": "lsof +L1 (deleted)"},
+  {"topic": "04", "kind": "自然语言", "query": "系统负载很高但 CPU 使用率不高，如何判断是不是 IO 等待？"},
+  {"topic": "04", "kind": "错误码", "query": "iostat await %util D state"},
+  {"topic": "05", "kind": "自然语言", "query": "服务突然被杀死，如何判断内存不足或者 cgroup 内存限制导致 OOM？"},
+  {"topic": "05", "kind": "错误码", "query": "Out of memory: Killed process oom_kill"},
+  {"topic": "06", "kind": "自然语言", "query": "服务打开文件太多无法建立连接，如何检查文件句柄上限与连接状态？"},
+  {"topic": "06", "kind": "错误码", "query": "EMFILE Too many open files CLOSE_WAIT"},
+  {"topic": "07", "kind": "自然语言", "query": "systemd 服务启动失败并反复自动重启，怎样定位启动原因？"},
+  {"topic": "07", "kind": "错误码", "query": "Start request repeated too quickly status=203/EXEC"},
+  {"topic": "08", "kind": "自然语言", "query": "服务器能访问 IP 但域名解析失败，应怎么检查 DNS？"},
+  {"topic": "08", "kind": "错误码", "query": "SERVFAIL NXDOMAIN Temporary failure in name resolution"},
+  {"topic": "09", "kind": "自然语言", "query": "HTTPS 握手失败，怎样检查证书过期与证书链问题？"},
+  {"topic": "09", "kind": "错误码", "query": "certificate has expired SSL certificate problem"},
+  {"topic": "10", "kind": "自然语言", "query": "PostgreSQL 连接耗尽并出现连接池等待超时，如何排查？"},
+  {"topic": "10", "kind": "错误码", "query": "FATAL: sorry, too many clients already remaining connection slots are reserved"}
+]

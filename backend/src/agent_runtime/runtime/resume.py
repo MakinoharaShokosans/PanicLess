@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from agent_runtime.approval import bind_decision, parse_decision
 from agent_runtime.approval.errors import NotWaitingForApprovalError
 from agent_runtime.checkpoint import CheckpointStore, repair_tail
+from agent_runtime.checkpoint.tool_journal import ToolJournal
 from agent_runtime.core import AgentState, ApprovalDecision
 from agent_runtime.loop import TaskOutcome, TaskRuntime, run
 from agent_runtime.runtime.active import ActiveTasks
@@ -71,7 +72,9 @@ async def prepare_resume(
         if decision is not None:
             raise NotWaitingForApprovalError("任务当前不在等待审批")
         raise TaskNotResumableError(f"任务 {task_id} 已{_OUTCOME_TEXT[stored.outcome]}，不可续跑")
-    state = _prepare(loaded, decision, deps.is_idempotent)
+    journal = ToolJournal(deps.checkpoints.journal_path)
+    has_journal = journal.has_batch(task_id, sum(m.role == "assistant" for m in loaded.messages))
+    state = _prepare(loaded, decision, deps.is_idempotent, journaled=has_journal)
     if state != loaded:
         await deps.checkpoints.commit(state)
     return state
@@ -79,6 +82,9 @@ async def prepare_resume(
 
 _OUTCOME_TEXT = {
     "succeeded": "成功完成",
+    "partial": "部分完成",
+    "needs_input": "需要补充信息",
+    "blocked": "受阻",
     "cancelled": "被取消",
     "terminated": "被安全终止",
     "": "结束",
@@ -89,6 +95,8 @@ def _prepare(
     state: AgentState,
     decision: ApprovalDecision | Mapping[str, object] | None,
     is_idempotent: Callable[[str], bool],
+    *,
+    journaled: bool = False,
 ) -> AgentState:
     if decision is not None:
         parsed = decision if isinstance(decision, ApprovalDecision) else parse_decision(decision)
@@ -96,4 +104,4 @@ def _prepare(
     elif state.pending_approval is not None and state.approval_decision is None:
         raise ApprovalRequiredFirstError(f"任务 {state.task_id} 正在等待审批，续跑必须带决策")
 
-    return repair_tail(state, is_idempotent).state
+    return state if journaled else repair_tail(state, is_idempotent).state

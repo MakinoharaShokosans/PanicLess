@@ -19,6 +19,7 @@ from typing import Any, Final
 from loguru import logger
 
 from agent_runtime.checkpoint import CheckpointStore
+from agent_runtime.checkpoint.tool_journal import ToolJournal
 from agent_runtime.context import (
     ObservationGovernor,
     ObservationStore,
@@ -58,7 +59,14 @@ from agent_runtime.runtime.assembly import (
 )
 from agent_runtime.runtime.events import TaskEvents
 from agent_runtime.runtime.memory_flow import MemoryFlow
+from agent_runtime.runtime.operator_settings import (
+    OperatorToolSettings,
+    append_custom_rules,
+    load_custom_rules,
+    load_tool_settings,
+)
 from agent_runtime.runtime.overrides import load_skill_policy, load_workspace_settings
+from agent_runtime.runtime.retrieval import RuntimeRetrieval
 from agent_runtime.skills import SkillRegistry
 from agent_runtime.subagents.delegate import (
     DelegateLimits,
@@ -76,11 +84,22 @@ from agent_runtime.websearch import (
 from baseagent_config import LoadedSettings
 from mcps import McpCallTool, McpDescribeTool, McpManager, McpTool, render_index
 from tools.builtin import ShellBinding, TaskArtifacts, build_builtin_tools
+from tools.builtin.task_record import ReadTaskRecordTool, TaskRecordView
 from tools.core import SidecarClient, ToolDispatcher, ToolRegistry
+from tools.retrieval.tool import KnowledgeSearchTool
 
 #: 内置工具的幂等性（重复执行是否安全）：崩溃恢复据此决定重试还是标记“结果未知”
 _IDEMPOTENT: Final = frozenset(
-    {"view_file", "list_dir", "grep", "read_artifact", "load_skill", "update_plan", "mcp_describe"}
+    {
+        "view_file",
+        "list_dir",
+        "grep",
+        "read_artifact",
+        "load_skill",
+        "update_plan",
+        "mcp_describe",
+        "knowledge_search",
+    }
 )
 
 
@@ -90,6 +109,7 @@ class _Assembled:
 
     events: TaskEvents
     artifacts: TaskArtifacts
+    task_record: TaskRecordView
     registry: ToolRegistry
     deferred: list[str]
     pinned: list[str]
@@ -124,6 +144,18 @@ class RuntimeFactory:
     usage: Callable[[str], int] = lambda task_id: 0
     #: 会话级“永久放行”的签名集合：跨续跑存活，不入检查点
     _allow: defaultdict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    retrieval: RuntimeRetrieval = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.retrieval = RuntimeRetrieval(self.loaded)
+
+    def _schemas(self, registry: ToolRegistry) -> tuple[ToolSchema, ...]:
+        return tuple(
+            schema
+            for schema in registry.schemas()
+            if schema.name != "knowledge_search"
+            or self.retrieval.current_config().knowledge_enabled
+        )
 
     def is_idempotent(self, name: str) -> bool:
         return name in _IDEMPOTENT or (self.mcp is not None and self.mcp.is_idempotent(name))
@@ -156,9 +188,13 @@ class RuntimeFactory:
         workspace = await self.memory.get_workspace(state.workspace_id)
         ws_settings = await load_workspace_settings(self.memory, workspace.workspace_id)
         skill_policy = await load_skill_policy(self.memory)
+        tool_settings = await load_tool_settings(self.memory, settings.bash_shell)
+        custom_rules = await load_custom_rules(self.memory)
         root = Path(state.workspace_path)
 
         artifacts = TaskArtifacts()
+        task_record = TaskRecordView()
+        task_record.bind(state.messages)
         disabled_skills = skill_policy.disabled | set(ws_settings.disabled_skills)
         skills = SkillRegistry.scan(
             skill_roots_from_settings(settings, root, sources=skill_policy.sources),
@@ -182,10 +218,13 @@ class RuntimeFactory:
             backup_dir=self.loaded.home / "backups" / state.task_id,
             ignored_dirs=settings.tools.files.ignored_dirs,
             list_dir_max_entries=settings.tools.files.list_dir_max_entries,
-            shell=self._shell_binding(state, root),
+            shell=self._shell_binding(state, root, tool_settings),
             skills=skills,
         )
         tools.extend(scratch_tools())
+        tools.append(ReadTaskRecordTool(task_record))
+        await self.retrieval.refresh()
+        tools.append(KnowledgeSearchTool(self.retrieval))
         websearch = self._websearch_tool(state, events)
         if websearch is not None:
             tools.append(websearch)
@@ -203,7 +242,9 @@ class RuntimeFactory:
         deferred = [t.name for t in mcp_tools if self._is_deferred(t)]
         pinned = [t.name for t in mcp_tools if t.name not in set(deferred)]
         by_name = {t.name: t for t in tools}
-        extra_untrusted: list[str] = []
+        extra_untrusted: list[str] = (
+            ["read_task_record"] if any(t.name == "read_task_record" for t in tools) else []
+        )
         if deferred:
             # 代理工具：索引里的工具经 mcp_describe 取定义，再经 mcp_call 调用（决策 0007）
             tools.append(
@@ -215,7 +256,7 @@ class RuntimeFactory:
             tools.append(McpCallTool())
             extra_untrusted.append("mcp_describe")
         parent_tools = {t.name: t for t in tools}  # 派发时刻父工具表的快照：子级只能是它的子集
-        spawn = self._spawn_tool(state, events, parent_tools)
+        spawn = self._spawn_tool(state, events, parent_tools, custom_rules=custom_rules)
         if spawn is not None and (
             not ws_settings.disabled_tools or spawn.name not in set(ws_settings.disabled_tools)
         ):
@@ -226,7 +267,8 @@ class RuntimeFactory:
             extra_untrusted = [t for t in extra_untrusted if t not in disabled_set]
         # 不可信工具必须逐名授权：研究工具，加上用户在配置里启用的 MCP 服务器通过消毒的工具
         untrusted = [
-            t.name for t in (websearch, *mcp_tools)
+            t.name
+            for t in (websearch, *mcp_tools)
             if t is not None and t.name in {x.name for x in tools}
         ] + extra_untrusted
         registry = ToolRegistry(
@@ -235,7 +277,7 @@ class RuntimeFactory:
             untrusted_allowlist=untrusted or None,
             hidden=deferred,
         )
-        context = await self.flow.prepare(state.session_id)
+        context = await self.flow.prepare(state.session_id, query=state.task_goal)
         prefs = SessionPreferences.from_mapping(
             await self.memory.get_session_settings(state.session_id)
         )
@@ -259,11 +301,22 @@ class RuntimeFactory:
             ),
             skills=skills,
             mcp_index=index,
-            tool_names=[s.name for s in registry.schemas()],
+            tool_names=[s.name for s in self._schemas(registry)],
         )
         system_override = await self.memory.get_app_setting(SYSTEM_PROMPT_KEY)
         if system_override:
             base = replace(base, system=system_override)
+        base = replace(
+            base,
+            system=append_custom_rules(base.system, custom_rules)
+            + (
+                "\n任务结束前调用 report_outcome，说明原目标的完成情况与剩余项。"
+                "不要把停止工具调用当作完成。修改后用 record_verification "
+                "明确检查、目标和工具证据；"
+                "pwd 等普通命令成功不能证明修复有效。"
+                "没有足够证据时报告 partial/needs_input/blocked。"
+            ),
+        )
         assets = replace(context.apply_to(base), environment=self._environment(root))
         assembler = assembler_from_settings(
             settings, assets, self.count_tokens, context_window=self._context_window()
@@ -271,6 +324,7 @@ class RuntimeFactory:
         return _Assembled(
             events=events,
             artifacts=artifacts,
+            task_record=task_record,
             registry=registry,
             deferred=deferred,
             pinned=pinned,
@@ -289,16 +343,25 @@ class RuntimeFactory:
 
         loop_cfg = settings.runtime.loop
         limits = loop_limits_from_settings(settings)
-        model = make_model_step(
-            ModelDeps(
-                gateway=gateway,
-                assemble=assembler,
-                tools=registry.schemas(),
-                tier=loop_cfg.model_tier,
-                call_timeout_sec=float(loop_cfg.call_timeout_sec),
-                on_delta=events.model_delta,
-            )
+        model_deps = ModelDeps(
+            gateway=gateway,
+            assemble=assembler,
+            tools=self._schemas(registry),
+            tier=loop_cfg.model_tier,
+            call_timeout_sec=float(loop_cfg.call_timeout_sec),
+            on_delta=events.model_delta,
         )
+
+        async def model(state: AgentState) -> Message:
+            # 每轮只刷新检索配置/Schema，其余工具仍沿用任务装配时的快照。
+            await self.retrieval.refresh()
+            model_step = make_model_step(replace(model_deps, tools=self._schemas(registry)))
+            return await model_step(state)
+
+        def bind_state(current: AgentState) -> None:
+            artifacts.bind(current.artifacts)
+            a.task_record.bind(current.messages)
+
         tool_runner = make_tool_runner(
             ToolRunnerDeps(
                 dispatcher=ToolDispatcher(registry),
@@ -313,7 +376,8 @@ class RuntimeFactory:
                 allowlist=self._allow[state.session_id],
                 emit=events.emit,
                 envelope=observation_envelope,
-                bind=lambda s: artifacts.bind(s.artifacts),
+                bind=bind_state,
+                journal=ToolJournal(self.checkpoints.journal_path),
                 proxy=McpProxy(deferred, pinned) if deferred else None,
                 guards=(check_urls,),
             )
@@ -370,15 +434,13 @@ class RuntimeFactory:
             text = json.dumps(
                 [
                     {"name": t.name, "description": t.description, "parameters": dict(t.parameters)}
-                    for t in a.registry.schemas()
+                    for t in self._schemas(a.registry)
                 ],
                 ensure_ascii=False,
                 indent=2,
             )
         elif segment == "history":
-            text = "\n\n".join(
-                f"[{m.role}]\n{m.content}" for m in a.context.history
-            )
+            text = "\n\n".join(f"[{m.role}]\n{m.content}" for m in a.context.history)
         elif segment == "workspace":
             text = layers["workspace"]
         elif segment in layers:
@@ -414,7 +476,7 @@ class RuntimeFactory:
         tools_json = json.dumps(
             [
                 {"name": t.name, "description": t.description, "parameters": dict(t.parameters)}
-                for t in a.registry.schemas()
+                for t in self._schemas(a.registry)
             ],
             ensure_ascii=False,
         )
@@ -501,6 +563,8 @@ class RuntimeFactory:
         state: AgentState,
         events: TaskEvents,
         parent_tools: Mapping[str, AgentTool],
+        *,
+        custom_rules: str = "",
     ) -> SpawnSubagentTool | None:
         cfg = self.loaded.settings.subagent
         if not cfg.enabled:
@@ -521,7 +585,7 @@ class RuntimeFactory:
                 policy,
                 state.permission_level,
                 limits,
-                system_prompt=self.library.get("subagent"),
+                system_prompt=append_custom_rules(self.library.get("subagent"), custom_rules),
                 extract_prompt=self.library.get("subagent_report"),
                 tier=cfg.model_tier,
                 canary=state.canary_token,
@@ -540,6 +604,7 @@ class RuntimeFactory:
             max_steps=cfg.max_steps,
             max_wall_time_sec=float(cfg.max_wall_time_sec),
             max_report_chars=cfg.max_report_chars,
+            storage_dir=self.loaded.paths.artifacts_dir / state.task_id / "subagents",
         )
 
     def skill_listing(
@@ -596,7 +661,9 @@ class RuntimeFactory:
             for s in registry.schemas()
         ]
 
-    def _shell_binding(self, state: AgentState, root: Path) -> ShellBinding | None:
+    def _shell_binding(
+        self, state: AgentState, root: Path, tool_settings: OperatorToolSettings | None = None
+    ) -> ShellBinding | None:
         if self.shell is None:
             return None
         cfg = self.loaded.settings.bash_shell
@@ -606,7 +673,12 @@ class RuntimeFactory:
             workspace_root=str(root),
             task_id=state.task_id,
             default_timeout_sec=float(cfg.timeout_sec),
-            max_timeout_sec=float(cfg.max_timeout_sec),
+            max_timeout_sec=float(
+                tool_settings.bash_max_timeout_sec if tool_settings else cfg.max_timeout_sec
+            ),
+            output_max_bytes=tool_settings.bash_output_max_bytes
+            if tool_settings
+            else cfg.output_max_bytes,
         )
 
     async def _summarise_task(self, system: str, user: str) -> str | None:

@@ -21,7 +21,9 @@ from evaluation.agent_bench.cases import Case
 from evaluation.agent_bench.checks import CheckResult, run_checks
 from evaluation.agent_bench.metrics import CaseMetrics, final_event, parse_sse, summarize_events
 
-TERMINAL = frozenset({"succeeded", "terminated", "failed", "cancelled"})
+TERMINAL = frozenset(
+    {"succeeded", "partial", "needs_input", "blocked", "terminated", "failed", "cancelled"}
+)
 _DELIVERY_CLIP = 2000
 
 

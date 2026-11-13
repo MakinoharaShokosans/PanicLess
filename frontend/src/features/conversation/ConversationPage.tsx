@@ -64,13 +64,21 @@ function UserMessage({ text }: { text: string }) {
 
 function PastTask({ task, turn }: { task: Task; turn: Turn | undefined }) {
   const [open, setOpen] = useState(false);
-  const replay = useReplay(task.task_id, task.task_goal, open);
+  const replay = useReplay(task.task_id, task.task_goal, open, task.status);
   const meta = statusMeta(task.status);
   return (
     <div className="space-y-2">
       {open && replay ? (
         <RunView
-          run={{ ...replay, delivery: replay.delivery || turn?.content || '' }}
+          run={{
+            ...replay,
+            delivery: replay.delivery || turn?.content || '',
+            conclusion: replay.conclusion ?? task.conclusion ?? null,
+            verificationRecords:
+              replay.verificationRecords && replay.verificationRecords.length > 0
+                ? replay.verificationRecords
+                : task.verification_records ?? [],
+          }}
           live={false}
         />
       ) : (
@@ -90,7 +98,21 @@ function PastTask({ task, turn }: { task: Task; turn: Turn | undefined }) {
           <span className="underline decoration-ink/15 decoration-dashed underline-offset-2 hover:decoration-ink/40 dark:decoration-white/20 dark:hover:decoration-white/50">
             {open ? '收起过程' : '过程'}
           </span>
-          {task.status !== 'succeeded' && <span className="text-bad">{meta.label}</span>}
+          {task.status !== 'succeeded' && (
+            <span
+              className={cn(
+                meta.tone === 'amber'
+                  ? 'text-warn'
+                  : meta.tone === 'blue'
+                    ? 'text-accent'
+                    : meta.tone === 'slate'
+                      ? 'text-mute'
+                      : 'text-bad',
+              )}
+            >
+              {meta.label}
+            </span>
+          )}
           <span className="tabular-nums">{task.step_count} 回合</span>
         </button>
       </div>

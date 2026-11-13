@@ -29,6 +29,7 @@ class ShellBinding:
     task_id: str
     default_timeout_sec: float
     max_timeout_sec: float
+    output_max_bytes: int | None = None
 
 
 def build_builtin_tools(
@@ -65,6 +66,7 @@ def build_builtin_tools(
                 task_id=shell.task_id,
                 default_timeout_sec=shell.default_timeout_sec,
                 max_timeout_sec=shell.max_timeout_sec,
+                output_max_bytes=shell.output_max_bytes,
             )
         )
     if skills is not None:

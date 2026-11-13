@@ -1,4 +1,4 @@
-# BaseAgent 开发任务入口。包装 uv 与 pnpm 命令，细节见 docs/01_architecture/05_tech_stack.md §6。
+# 项目开发任务入口。包装 uv 与 pnpm 命令，使用说明见 README.md。
 
 .DEFAULT_GOAL := help
 BACKEND := backend

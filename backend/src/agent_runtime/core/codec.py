@@ -22,6 +22,9 @@ from agent_runtime.core.state import (
     FailedAttempt,
     PendingApproval,
     PlanItem,
+    TaskConclusion,
+    ToolObservation,
+    VerificationRecord,
     build_state,
 )
 
@@ -34,6 +37,15 @@ MINIMUM_SCHEMA_VERSION: Final = 3
 #: 与纯 agent loop 的状态不兼容，不迁移（docs/12_decisions/0006）
 MIGRATIONS: Final[dict[int, Migration]] = {
     # v3 → v4：加任务内压缩的两个字段（没压缩过：摘要为空、切点为 0）
+    4: lambda data: {
+        **data,
+        "verification_records": [],
+        "observations": [],
+        "work_revision": 0,
+        "conclusion": None,
+        "inbox_cursor": 0,
+        "verification": "unchecked" if data.get("verification") != "none" else "none",
+    },
     3: lambda data: {**data, "stream_summary": "", "stream_cut": 0},
 }
 
@@ -59,9 +71,9 @@ def state_to_dict(state: AgentState) -> dict[str, Any]:
         value = getattr(state, name)
         if name == "messages":
             out[name] = [m.to_dict() for m in state.messages]
-        elif name in ("plan", "failed_attempts"):
+        elif name in ("plan", "failed_attempts", "verification_records", "observations"):
             out[name] = [m.model_dump(mode="json") for m in cast("tuple[BaseModel, ...]", value)]
-        elif name in ("pending_approval", "approval_decision"):
+        elif name in ("pending_approval", "approval_decision", "conclusion"):
             out[name] = None if value is None else cast(BaseModel, value).model_dump(mode="json")
         elif name in ("facts", "fingerprint_history"):
             out[name] = list(cast("tuple[str, ...]", value))
@@ -114,7 +126,12 @@ def state_from_dict(
     values["messages"] = _list(data, "messages", Message.from_dict)
     values["plan"] = _list(data, "plan", lambda d: _model(PlanItem, d))
     values["failed_attempts"] = _list(data, "failed_attempts", lambda d: _model(FailedAttempt, d))
+    values["verification_records"] = _list(
+        data, "verification_records", lambda d: _model(VerificationRecord, d)
+    )
+    values["observations"] = _list(data, "observations", lambda d: _model(ToolObservation, d))
     for name, kind in (
+        ("conclusion", TaskConclusion),
         ("pending_approval", PendingApproval),
         ("approval_decision", ApprovalDecision),
     ):

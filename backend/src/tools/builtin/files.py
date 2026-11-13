@@ -7,7 +7,6 @@ import difflib
 import io
 import os
 import re
-import shutil
 import stat
 import tempfile
 import time
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from agent_runtime.core import AgentTool, ToolResult
+from tools.builtin.backups import FileBackup, create_backup
 from tools.builtin.diagnostics import check_syntax
 from tools.builtin.paths import PathEscapeError, int_arg, resolve_within_root, text_arg
 from tools.builtin.textio import (
@@ -422,7 +422,7 @@ class WriteFileTool(AgentTool):
         rel = _rel(self._root, path)
         if path == self._root or path.is_dir():
             return ToolResult.failure(f"{rel} 是目录，不能作为文件写入")
-        backed_up = False
+        backed_up: FileBackup | None = None
         notes: list[str] = []
         try:
             mode = None
@@ -449,7 +449,7 @@ class WriteFileTool(AgentTool):
                     f"内容 {len(data)} 字节，超过单次写入上限 {self._limits.write_max_bytes} 字节"
                 )
             if path.exists():
-                backed_up = self._backup(path, rel)
+                backed_up = self._backup(path, data)
             path.parent.mkdir(parents=True, exist_ok=True)
             self._replace(path, data, mode)
         except _BackupError as exc:
@@ -463,24 +463,16 @@ class WriteFileTool(AgentTool):
             ok=True,
             content=f"已写入 {rel}（{len(content)} 字符，{len(data)} 字节{note}）"
             + _syntax_note(rel, content),
-            meta={"changed_files": [rel]},
+            meta={"changed_files": [rel], **({"backup": backed_up.to_dict()} if backed_up else {})},
         )
 
-    def _backup(self, path: Path, rel: str) -> bool:
+    def _backup(self, path: Path, data: bytes) -> FileBackup | None:
         if self._backup_dir is None:
-            return False
-        clean = Path(rel).relative_to(Path(rel).anchor) if Path(rel).is_absolute() else Path(rel)
-        target = self._backup_dir / clean
-        n = 0
-        while target.exists():
-            n += 1
-            target = self._backup_dir / f"{clean}.{n}"
+            return None
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
+            return create_backup(self._backup_dir, path, data)
         except OSError as exc:
             raise _BackupError(str(exc)) from exc
-        return True
 
     @staticmethod
     def _replace(path: Path, data: bytes, mode: int | None) -> None:
@@ -612,7 +604,7 @@ class EditFileTool(WriteFileTool):
             return ToolResult.failure(f"修改后文件 {len(data)} 字节，超过上限")
         try:
             mode = stat.S_IMODE(path.stat().st_mode)
-            backed_up = self._backup(path, rel)
+            backed_up = self._backup(path, data)
             self._replace(path, data, mode)
         except _BackupError as exc:
             return ToolResult.failure(f"修改前备份失败，未写入：{exc}")
@@ -627,7 +619,7 @@ class EditFileTool(WriteFileTool):
         return ToolResult(
             ok=True,
             content=f"{head}\n{_diff_preview(before, work)}" + _syntax_note(rel, out_text),
-            meta={"changed_files": [rel]},
+            meta={"changed_files": [rel], **({"backup": backed_up.to_dict()} if backed_up else {})},
         )
 
 

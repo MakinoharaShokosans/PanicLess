@@ -25,6 +25,7 @@ from agent_runtime.memory.errors import (
     WorkspaceNotFound,
     WorkspacePathConflict,
 )
+from agent_runtime.memory.experience import HistoricalCase, rank_cases
 from agent_runtime.memory.models import (
     SessionInfo,
     SessionMemory,
@@ -122,6 +123,16 @@ _MIGRATIONS: Final[tuple[str, ...]] = (
     ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN updated_at REAL NOT NULL DEFAULT 0;
     UPDATE sessions SET updated_at = created_at WHERE updated_at = 0;
+    """,
+    """
+    CREATE TABLE historical_cases (
+        task_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+        goal TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
     """,
 )
 
@@ -386,9 +397,7 @@ class MemoryStore:
                 "WHERE (title LIKE ? OR session_id LIKE ?) "
                 "ORDER BY pinned DESC, updated_at DESC, created_at DESC LIMIT ?"
             )
-            rows = await (
-                await self._require().execute(sql, (pattern, pattern, limit))
-            ).fetchall()
+            rows = await (await self._require().execute(sql, (pattern, pattern, limit))).fetchall()
         return [_session_info(row) for row in rows]
 
     async def update_session(
@@ -605,6 +614,27 @@ class MemoryStore:
             )
             await conn.commit()
         return new
+
+    async def save_case(self, case: HistoricalCase) -> None:
+        """Archive cases independently of session compaction and its size limits."""
+        await self._need_session(case.session_id)
+        await self._write(
+            "INSERT INTO historical_cases VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(task_id) DO UPDATE SET outcome=excluded.outcome, "
+            "content=excluded.content, created_at=excluded.created_at",
+            (case.task_id, case.session_id, case.goal, case.outcome, case.content, case.created_at),
+        )
+
+    async def search_cases(self, query: str, *, limit: int = 5) -> list[HistoricalCase]:
+        if not query.strip() or limit <= 0:
+            return []
+        rows = await (
+            await self._require().execute(
+                "SELECT task_id, session_id, goal, outcome, content, created_at "
+                "FROM historical_cases"
+            )
+        ).fetchall()
+        return rank_cases(query, [HistoricalCase(*row) for row in rows], limit)
 
     # ------------------------------------------------------------------ 任务元数据
 

@@ -5,7 +5,14 @@
  * 规则：忽略未知事件和未知字段；按 seq 去重（重复或回退的事件不改变状态）；
  * 回合数与 Token 取自 `turn.finished` 与 `task.finished`，不用事件条数估计。
  */
-import type { ApprovalRequest, PlanItem, ServerEvent, TaskStatus } from '../types/api';
+import type {
+  ApprovalRequest,
+  PlanItem,
+  ServerEvent,
+  TaskConclusion,
+  TaskStatus,
+  VerificationRecord,
+} from '../types/api';
 
 export interface ChangedFile {
   path: string;
@@ -80,6 +87,8 @@ export interface RunState {
   startedTs: number | null;
   finishedTs: number | null;
   compactions: number;
+  conclusion?: TaskConclusion | null;
+  verificationRecords?: VerificationRecord[];
 }
 
 export function emptyRun(taskId: string, goal = '', status: TaskStatus = 'running'): RunState {
@@ -99,6 +108,8 @@ export function emptyRun(taskId: string, goal = '', status: TaskStatus = 'runnin
     startedTs: null,
     finishedTs: null,
     compactions: 0,
+    conclusion: null,
+    verificationRecords: [],
   };
 }
 
@@ -347,6 +358,11 @@ export function reduceTaskEvent(state: RunState, event: ServerEvent): RunState {
       };
     case 'task.finished': {
       const status = str(event['status'], 'succeeded') as TaskStatus;
+      const conclusion = (event['conclusion'] as TaskConclusion | null | undefined) ?? state.conclusion ?? null;
+      const rawRecords = event['verification_records'];
+      const verificationRecords = Array.isArray(rawRecords)
+        ? (rawRecords as VerificationRecord[])
+        : (state.verificationRecords ?? []);
       return {
         ...next,
         status,
@@ -356,6 +372,8 @@ export function reduceTaskEvent(state: RunState, event: ServerEvent): RunState {
         stepCount: num(event['step_count'], state.stepCount),
         totalTokens: num(event['total_tokens'], state.totalTokens),
         finishedTs: event.ts,
+        conclusion,
+        verificationRecords,
         // 流式块若因中断没被 model.reply 收尾，到终态一律收尾
         items: state.items.map((i) =>
           (i.kind === 'reasoning' || i.kind === 'say') && i.streaming
@@ -508,6 +526,8 @@ export function runFromSnapshot(task: {
   termination_reason: string;
   started_at?: number | null;
   finished_at?: number | null;
+  conclusion?: TaskConclusion | null;
+  verification_records?: VerificationRecord[];
 }): RunState {
   return {
     ...emptyRun(task.task_id, task.task_goal, task.status),
@@ -518,6 +538,8 @@ export function runFromSnapshot(task: {
     terminationReason: task.termination_reason,
     startedTs: task.started_at ?? null,
     finishedTs: task.finished_at ?? null,
+    conclusion: task.conclusion ?? null,
+    verificationRecords: task.verification_records ?? [],
   };
 }
 

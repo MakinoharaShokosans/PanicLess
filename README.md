@@ -1,5 +1,7 @@
 # LinuxOpsPilot
 
+文档导航：[项目文档入口](docs/INDEX.md) · [运维 RAG](docs/rag/README.md)。仓库目录使用 PanicLess，现有包名与兼容命令仍保留 baseagent。
+
 专为 Linux 生产与运维环境打造的智能 SRE 故障排查与运维治理智能体（Autonomous Linux SRE Agent）。
 提供 CLI-First 原生优先的底层 Harness 运行时，与融合 `omoi-aesthetic` 极简几何线条艺术的 **SRE 智能作战指挥舱（Mission Control Cockpit）** 前端。
 
@@ -153,7 +155,7 @@ cp .env.example .env     # 填写 DEEPSEEK_API_KEY（或其它 OpenAI 兼容提�
 ### 3. 一键安装依赖与自检
 ```bash
 make install             # 一键同步 Python 虚拟环境与安装前端依赖
-make check               # 运行静态分析 + 类型检查 + 离线回归测试（2000+ 后端单测 + 137 前端单测）
+make check               # 运行静态分析 + 类型检查 + 离线回归测试
 ```
 
 ### 4. 启动服务
@@ -251,20 +253,20 @@ server {
 ## 仓库结构
 
 ```
-LinuxOpsPilot/
+PanicLess/
 ├── backend/                 # Python 3.12 SRE 运行时、API、沙箱 Sidecar 与评测体系
 │   ├── src/agent_runtime/   # 主循环、权限策略、提示词工程、检查点与存储
 │   ├── src/services/        # 独立的 bash_shell 与 web_search 安全沙箱
-│   ├── src/skills/          # 5 大内置生产级 SRE SOP 技能包
+│   ├── src/skills/          # 6 个内置 SRE 技能包
 │   ├── src/tools/           # 内置文件/检索/Shell/YAML即时诊断工具
-│   └── tests/               # 2038 个单测与端到端真实 SRE 生产集成测试套件
+│   └── tests/               # 单元、集成与实际功能测试
 ├── frontend/                # React 19 + Tailwind CSS SRE 智能作战指挥舱
 │   ├── src/components/      # 终端抽屉、产物抽屉、雷达大盘、防护红线、几何微控件
 │   ├── src/features/        # 决策小结流、快捷运维卡片、去框化引线、检视器
 │   ├── src/stores/          # 指挥舱状态机 (useCockpitStore)、权限基线与交互状态
 │   └── dist/                # 生产静态单端口打包产物
 ├── config/config.toml       # 运行时权限、核心禁区、端点降级与参数策略
-├── docs/                    # 完整设计文档与《前端审美Skill规范》
+├── docs/                    # 文档入口、RAG 方案/任务/报告、前端规范与运维手册
 └── Makefile                 # 一键开发、测试与构建入口
 ```
 
@@ -272,22 +274,20 @@ LinuxOpsPilot/
 
 ## 质量与测试保证
 
-代码库包含严格的契约保障与全量自动化回归测试：
+测试数量及通过状态以每次实际执行结果为准，不在 README 固定历史数字。不建设 E2E 套件。
 
-- **后端测试**（2038+ 项测试用例全部通过）：
+- **后端测试**（默认排除 real_llm 与 slow）：
   ```bash
   cd backend && uv run pytest
-  # 2038 passed in 61.62s (100% 通过率，0 失败)
   ```
-  - `tests/test_ops_scenarios_e2e.py`：端到端真实 SRE 生产运维链路验证；
-  - `tests/test_permissions.py`：SRE 运维命令权限分类覆盖；
-  - `tests/test_tools_files.py` / `test_tools_edit_search.py`：路径沙箱与核心禁区安全防御验证；
-  - `tests/test_builtin_skills.py`：SRE 技能包元数据与防注入合规校验。
+  - `tests/scenarios/test_ops_scenarios.py`：功能集成真实 SRE 生产运维链路验证；
+  - `tests/guardrails/test_permissions.py`：SRE 运维命令权限分类覆盖；
+  - `tests/tools/test_tools_files.py` / `tests/tools/test_tools_edit_search.py`：路径沙箱与核心禁区安全防御验证；
+  - `tests/skills/test_builtin_skills.py`：SRE 技能包元数据与防注入合规校验。
 
-- **前端测试**（25 套测试套件，137+ 项测试全部通过）：
+- **前端测试**（单元与组件测试）：
   ```bash
   cd frontend && pnpm test
-  # 25 passed (25 test files), 137 passed (137 tests)
   ```
   - `SreBootSplash.test.tsx` / `SreArtifactDrawer.test.tsx` / `SreTerminalDrawer.test.tsx`：指挥舱核心组件深度测试；
   - `SreNetworkStorageDial.test.tsx` / `SreProductionGuard.test.tsx`：网络暴露面与权限红线防护测试；

@@ -8,9 +8,9 @@
 #      例：BASEAGENT_SERVER__PORT=8010 覆盖 [server] port。
 #   3. 路径类配置中的相对路径，相对数据目录 BASEAGENT_HOME 解析（见 [app]），不是当前目录。
 #   4. 加载时强校验，不合法直接拒绝启动（例如监听非回环地址）。
-#   5. 标注“待验证”的值依据官方文档摘要，上线前需用真实密钥验证，见 docs/07_llm_gateway/04_deepseek.md。
+#   5. 标注“待验证”的值依据官方文档摘要，上线前需用真实密钥验证，以当前服务商文档和实际请求结果为准。
 #
-# 文档：docs/01_architecture/04_configuration.md
+# 配置以本文件字段注释与 backend/src/baseagent_config/models.py 为准；文档入口：docs/INDEX.md
 # ==============================================================================
 
 
@@ -305,6 +305,7 @@ memory_pool_mb = 8192
 max_concurrent = 4
 artifacts_dir = "artifacts"
 stream_chunk_bytes = 65536
+output_max_bytes = 8192             # stdout/stderr 返回正文总字节上限；全文仍写入产物
 distill_head_lines = 20
 distill_tail_lines = 30
 distill_max_keyword_lines = 200
@@ -383,7 +384,7 @@ max_observation_chars = 4000
 max_answer_chars = 400
 max_citations = 8
 max_report_chars = 3000
-denied_tools = ["spawn_subagent", "websearch", "update_plan", "note", "mcp_describe", "mcp_call"]
+denied_tools = ["spawn_subagent", "websearch", "update_plan", "note", "read_task_record", "record_verification", "report_outcome", "mcp_describe", "mcp_call"]
 
 
 # ------------------------------------------------------------------------------
@@ -415,8 +416,10 @@ read_only_tools = [
     "load_skill",
     "update_plan",          # 草稿工具：只改任务内的计划与笔记，无外部副作用
     "note",
+    "read_task_record", "record_verification", "report_outcome",
     "mcp_describe",         # 取延迟 MCP 工具的定义；mcp_call 按目标工具判定，自身不在名单里
     "websearch",
+    "knowledge_search",    # 查询运维知识；工作区由任务绑定，不开放入库管理
     "spawn_subagent",       # 委派动作本身无副作用；子级每次调用按父级权限重新判定
 ]
 workspace_write_tools = ["write_file", "edit_file"]
@@ -520,3 +523,70 @@ value_patterns = ['sk-[A-Za-z0-9]{16,}', 'ghp_[A-Za-z0-9]{20,}', 'AKIA[0-9A-Z]{1
 # ------------------------------------------------------------------------------
 [security]
 canary_salt_file = "canary_salt"    # 首次启动生成并保存（权限 0600），不再使用源码里的固定盐
+
+
+# ------------------------------------------------------------------------------
+# 20. 独立检索模型服务
+# ------------------------------------------------------------------------------
+# 默认关闭，不继承聊天模型地址、模型或密钥。
+# 地址与模型名沿用仓库已有 RAG 联调配置；切换服务商时一并修改。
+# 默认关闭；模型调用需要 PANICLESS_RAG_API_KEY 环境变量。
+# 启用但缺 Key 时应用仍可启动并告警；已有索引可退回 BM25，重排失败保留融合结果。
+# 新资料入库仍需要可用的 Embedding 服务；不会以模拟向量代替。
+# api_key_env 只保存环境变量名，不填写真实密钥；无鉴权的本地服务可显式设为空。
+# Embedding 地址、协议或模型变化需 rebuild；Rerank 配置支持热更新。
+[retrieval]
+knowledge_enabled = false
+persist_dir = "retrieval/store"     # 相对 BASEAGENT_HOME；控制指针固定在 home/retrieval
+sqlite_path = "metadata.sqlite3"    # 相对 persist_dir
+chroma_path = "chroma"              # 相对 persist_dir
+sources = []                       # 正式导入前添加下方来源；默认不扫描任何目录
+embedding_revision = "1"           # 模型别名内容变化时人工递增，随后 rebuild
+preprocessing_version = "utf8-lf-v1"
+chunker_version = "paragraph-v1"
+chunk_chars = 1200
+overlap_chars = 150
+embedding_batch_size = 16
+vector_candidates = 20
+bm25_candidates = 20
+rrf_k = 60
+rerank_candidates = 20
+default_top_k = 5
+max_top_k = 10
+search_timeout_sec = 15.0
+index_timeout_sec = 600.0
+max_query_chars = 10000
+max_chunks = 50000
+# 用 [[retrieval.sources]] 替代 sources=[] 后添加来源，例如：
+# source_id = "ops-manuals"
+# root_path = "../docs/运维手册"     # 相对本 config.toml 的目录
+# 知识库全局使用，所有会话的 Agent 均可检索；无需 workspace_id 或共享标记。
+# service = ""
+# tags = ["ops"]
+# max_file_bytes = 2097152
+# max_files = 1000
+
+[retrieval.context_expansion]
+enabled = true
+mode = "adjacent"
+before = 1
+after = 1
+same_section_only = true
+max_chars_per_block = 3600
+max_total_chars = 12000
+
+[retrieval.embedding]
+enabled = false
+protocol = "openai_embeddings"
+endpoint_url = "https://api.openlux.ai/v1/embeddings"
+model = "text-embedding-3-large"
+api_key_env = "PANICLESS_RAG_API_KEY"
+timeout_sec = 30.0
+
+[retrieval.rerank]
+enabled = false
+protocol = "indexed_rerank"
+endpoint_url = "https://api.openlux.ai/v1/rerank"
+model = "qwen3-rerank"
+api_key_env = "PANICLESS_RAG_API_KEY"
+timeout_sec = 30.0

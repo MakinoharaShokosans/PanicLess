@@ -9,14 +9,23 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 from loguru import logger
 
 from agent_runtime.checkpoint import RecoveryReport, StoredStatus, mark_cancelled
-from agent_runtime.core import AgentState, ApprovalDecision, current_task_id
-from agent_runtime.loop import TaskOutcome, run
+from agent_runtime.checkpoint.tool_journal import ToolJournal
+from agent_runtime.core import (
+    AgentState,
+    ApprovalDecision,
+    Message,
+    ToolResult,
+    apply_update,
+    current_task_id,
+    unanswered_calls,
+)
+from agent_runtime.loop import TaskOutcome, TaskRuntime, run
 from agent_runtime.runtime.active import ActiveTasks
 from agent_runtime.runtime.errors import (
     TaskAlreadyExistsError,
@@ -28,9 +37,19 @@ from agent_runtime.runtime.resume import ResumeDeps, prepare_resume
 from agent_runtime.runtime.run import RunnerDeps, TaskRequest, create_task
 
 TaskStatus = Literal[
-    "running", "waiting_for_approval", "succeeded", "terminated", "failed", "cancelled"
+    "running",
+    "waiting_for_approval",
+    "succeeded",
+    "partial",
+    "needs_input",
+    "blocked",
+    "terminated",
+    "failed",
+    "cancelled",
 ]
-TERMINAL: frozenset[TaskStatus] = frozenset({"succeeded", "terminated", "failed", "cancelled"})
+TERMINAL: frozenset[TaskStatus] = frozenset(
+    {"succeeded", "partial", "needs_input", "blocked", "terminated", "failed", "cancelled"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +77,12 @@ class _Record:
         self.state = state
         self.task: asyncio.Task[None] | None = None
         self.shutting_down = False
+        self.session_id = state.session_id if state is not None else ""
+        self.pause_requested = False
+        self.paused = asyncio.Event()
+        self.continue_run = asyncio.Event()
+        self.continue_run.set()
+        self.inbox_lock = asyncio.Lock()
 
     def snapshot(self, task_id: str) -> TaskSnapshot:
         return TaskSnapshot(task_id, self.status, self.reason, self.state)
@@ -93,6 +118,7 @@ class TaskRunner:
             active=self._active,
         )
         self._records: dict[str, _Record] = {}
+        self._manual_sessions: set[str] = set()
 
     def attach_observer(self, observer: TaskObserver) -> None:
         """生命周期观察者依赖运行器本身（任务服务），所以允许装配后再接上，且只能接一次。"""
@@ -128,6 +154,77 @@ class TaskRunner:
         while pending := [r.task for r in self._records.values() if r.task and not r.task.done()]:
             await asyncio.wait(pending)
 
+    def control_state(self, task_id: str) -> dict[str, str]:
+        record = self._record(task_id)
+        mode = "inactive"
+        if record.status == "running":
+            mode = (
+                "paused"
+                if record.paused.is_set()
+                else "pause_requested"
+                if record.pause_requested
+                else "autonomous"
+            )
+        return {"task_id": task_id, "status": record.status, "control_state": mode}
+
+    def control(self, task_id: str, action: Literal["pause", "resume"]) -> dict[str, str]:
+        """协作式暂停：当前步骤结束后停在下一次模型/工具调用之前。"""
+        record = self._record(task_id)
+        if record.status != "running":
+            raise TaskAlreadyRunningError("只有正在运行的任务可以暂停或解除暂停")
+        if action == "pause":
+            record.pause_requested = True
+            record.continue_run.clear()
+        else:
+            self._check_manual_session(record.session_id)
+            record.pause_requested = False
+            record.paused.clear()
+            record.continue_run.set()
+        return self.control_state(task_id)
+
+    async def send_message(self, task_id: str, content: str) -> dict[str, object]:
+        record = self._record(task_id)
+        async with record.inbox_lock:
+            if record.status not in {"running", "waiting_for_approval"}:
+                raise TaskAlreadyRunningError("只有运行中或等待审批的任务可以接收补充消息")
+            return await self._deps.checkpoints.enqueue_message(task_id, content)
+
+    async def _merge_inbox(self, state: AgentState) -> AgentState:
+        messages = await self._deps.checkpoints.inbox(state.task_id, after=state.inbox_cursor)
+        if not messages:
+            return state
+        merged = apply_update(
+            state,
+            {
+                "messages": [
+                    Message(role="user", content=str(item["content"])) for item in messages
+                ],
+                "inbox_cursor": messages[-1]["message_id"],
+                "conclusion": None,
+            },
+        )
+        await self._deps.checkpoints.commit(merged)
+        return merged
+
+    def _check_manual_session(self, session_id: str) -> None:
+        if session_id in self._manual_sessions:
+            raise TaskAlreadyRunningError("该会话正在执行人工操作，请等待操作结束")
+
+    def acquire_manual_session(self, session_id: str) -> None:
+        """同一事件循环内同步检查并占用，终端/回滚与 Agent 不同时修改会话现场。"""
+        self._check_manual_session(session_id)
+        for record in self._records.values():
+            if (
+                record.session_id == session_id
+                and record.status == "running"
+                and not record.paused.is_set()
+            ):
+                raise TaskAlreadyRunningError("请等待该会话的 Agent 实际暂停或结束后再操作")
+        self._manual_sessions.add(session_id)
+
+    def release_manual_session(self, session_id: str) -> None:
+        self._manual_sessions.discard(session_id)
+
     # ------------------------------------------------------------------ 提交与续跑
 
     def new_task_id(self) -> str:
@@ -138,12 +235,14 @@ class TaskRunner:
 
         ``task_id`` 由调用方预先分配时（要先写元数据再运行），重复使用已登记的 id 会被拒绝。
         """
+        self._check_manual_session(request.session_id)
         if self._running() >= self._max:
             raise TaskQueueFullError(f"并发任务已满（上限 {self._max}）")
         task_id = task_id or self._new_id()
         if task_id in self._records:
             raise TaskAlreadyExistsError(f"任务 {task_id} 已存在，不会覆盖")
         record = _Record("running")
+        record.session_id = request.session_id
         self._records[task_id] = record  # 与上面的检查之间没有 await，名额不会被并发提交抢占
         try:
             state = await create_task(self._deps, request, task_id)
@@ -161,16 +260,21 @@ class TaskRunner:
     ) -> None:
         """续跑。校验错误同步抛给调用方，任务保持原状；通过后转入后台运行。"""
         record = await self._record_for_resume(task_id)
+        self._check_manual_session(record.session_id)
         if not self._active.try_acquire(task_id):
             raise TaskAlreadyRunningError(f"任务 {task_id} 已在运行")
         try:
             if self._running() >= self._max:
                 raise TaskQueueFullError(f"并发任务已满（上限 {self._max}）")
             state = await prepare_resume(self._resume_deps, task_id, decision)
+            self._check_manual_session(state.session_id)
         except BaseException:
             self._active.release(task_id)
             raise
         record.status, record.reason = "running", ""
+        record.pause_requested = False
+        record.paused.clear()
+        record.continue_run.set()
         self._spawn(task_id, record, state)
 
     async def _record_for_resume(self, task_id: str) -> _Record:
@@ -186,7 +290,40 @@ class TaskRunner:
 
     def _spawn(self, task_id: str, record: _Record, state: AgentState) -> None:
         record.status, record.state = "running", None
+        record.session_id = state.session_id
         record.task = asyncio.create_task(self._run(task_id, record, state), name=task_id)
+
+    def _controlled(self, runtime: TaskRuntime, record: _Record) -> TaskRuntime:
+        async def boundary() -> None:
+            while record.pause_requested:
+                record.paused.set()
+                try:
+                    await record.continue_run.wait()
+                finally:
+                    record.paused.clear()
+
+        async def before_model(state: AgentState) -> AgentState:
+            await boundary()
+            if runtime.before_model is not None:
+                state = await runtime.before_model(state)
+            return await self._merge_inbox(state)
+
+        async def tools(state: AgentState, calls):
+            await boundary()
+            return await runtime.tools(state, calls)
+
+        # 压缩也可能调用模型；暂停后不在后台继续发出压缩请求。
+        async def compact(state: AgentState, force: bool):
+            await boundary()
+            assert runtime.compact is not None
+            return await runtime.compact(state, force)
+
+        return replace(
+            runtime,
+            tools=tools,
+            compact=compact if runtime.compact else None,
+            before_model=before_model,
+        )
 
     # ------------------------------------------------------------------ 后台运行
 
@@ -196,7 +333,17 @@ class TaskRunner:
             if self._observer is not None:
                 await _swallow(self._observer.task_started(task_id, state))
             runtime = await self._deps.build_runtime(state)
-            outcome = await run(runtime, state)
+            while True:
+                outcome = await run(self._controlled(runtime, record), state)
+                # 与消息入队互斥：已接收的消息不能落在最终回复之后而永久未处理。
+                async with record.inbox_lock:
+                    if outcome.status not in {"waiting_for_approval", "terminated"}:
+                        merged = await self._merge_inbox(outcome.state)
+                        if merged is not outcome.state:
+                            state = merged
+                            continue
+                    await self._settle(task_id, record, outcome)
+                    break
         except asyncio.CancelledError:
             if record.shutting_down:
                 record.status, record.reason = "failed", "服务关闭"
@@ -204,8 +351,6 @@ class TaskRunner:
         except Exception as exc:
             logger.exception("任务 {} 失败", task_id)
             await self._finish(task_id, record, "failed", f"{type(exc).__name__}: {exc}", None)
-        else:
-            await self._settle(task_id, record, outcome)
         finally:
             self._active.release(task_id)
 
@@ -226,9 +371,10 @@ class TaskRunner:
                     outcome.state, outcome="terminated", reason=reason
                 )
                 await self._finish(task_id, record, "terminated", reason, outcome.state)
-            case "succeeded":
-                await self._deps.checkpoints.commit(outcome.state, outcome="succeeded")
-                await self._finish(task_id, record, "succeeded", "", outcome.state)
+            case "succeeded" | "partial" | "needs_input" | "blocked":
+                status = outcome.status
+                await self._deps.checkpoints.commit(outcome.state, outcome=status)
+                await self._finish(task_id, record, status, "", outcome.state)
 
     async def _finish(
         self,
@@ -256,7 +402,14 @@ class TaskRunner:
         stored = await self._deps.checkpoints.load(task_id)
         final = stored
         if stored is not None:
-            final = mark_cancelled(stored)
+            journal = ToolJournal(self._deps.checkpoints.journal_path)
+            turn = sum(m.role == "assistant" for m in stored.messages)
+            results: dict[str, ToolResult | None] = {}
+            for call in unanswered_calls(stored.messages):
+                status, result, _ = journal.load(task_id, turn, call.id)
+                if status != "queued":
+                    results[call.id] = result
+            final = mark_cancelled(stored, results)
             await self._deps.checkpoints.commit(final, outcome="cancelled", reason="用户取消")
         await self._finish(task_id, record, "cancelled", "用户取消", final)
         return True

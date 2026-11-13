@@ -6,7 +6,10 @@ const LABEL: Record<string, string> = {
   running: '运行中',
   waiting_for_approval: '等待审批',
   succeeded: '已完成',
-  failed: '失败',
+  partial: '部分完成',
+  needs_input: '需要补充信息',
+  blocked: '受阻',
+  failed: '运行失败',
   cancelled: '已取消',
   terminated: '已终止',
 };
@@ -27,15 +30,17 @@ export function StatusDot({
 }) {
   const live = status === 'running' || status === 'queued';
   const tone =
-    status === 'waiting_for_approval'
+    status === 'waiting_for_approval' || status === 'partial'
       ? 'bg-warn'
-      : status === 'failed' || status === 'terminated'
+      : status === 'failed' || status === 'terminated' || status === 'blocked'
         ? 'bg-bad'
-        : live
+        : status === 'needs_input'
           ? 'bg-accent'
-          : status === 'succeeded'
-            ? 'bg-ok/80'
-            : '';
+          : live
+            ? 'bg-accent'
+            : status === 'succeeded'
+              ? 'bg-ok/80'
+              : '';
   return (
     <span
       role="img"

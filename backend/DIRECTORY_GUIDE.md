@@ -68,10 +68,10 @@
 | **防断网自毁命令审计拦截** | [`src/services/bash_shell/audit.py`](src/services/bash_shell/audit.py) | `audit()`, `_NET_DOWN`, `_FLUSH_RULES`, `NETWORK_SUICIDE_RISK` 阻断 |
 | **系统路径解绑与核心禁区防御** | [`src/tools/builtin/paths.py`](src/tools/builtin/paths.py) | `resolve_within_root()`, `_FORBIDDEN_PREFIXES` (`/boot`, `/sys`, `/proc`), `_FORBIDDEN_EXACT` (`/etc/shadow`) |
 | **配置文件 YAML 即时语法诊断** | [`src/tools/builtin/diagnostics.py`](src/tools/builtin/diagnostics.py) | `check_syntax()`, AST / JSON / TOML / PyYAML 解析与错误定位 |
-| **SRE 生产级 SOP 技能包** | [`src/skills/`](src/skills/) | 5 大 SOP: `linux_troubleshooting`, `service_management`, `docker_container_ops`, `safe_config_change`, `log_analysis`, `shell_best_practices` |
+| **SRE 生产级 SOP 技能包** | [`src/skills/`](src/skills/) | 6 个技能包： `linux_troubleshooting`, `service_management`, `docker_container_ops`, `safe_config_change`, `log_analysis`, `shell_best_practices` |
 | **SRE 黄金工作法系统提示词** | [`src/agent_runtime/prompts/system.md`](src/agent_runtime/prompts/system.md) | 先诊断后动刀、动前备份、语法前检、平滑重载优先、存活探针复核 |
 | **生产配置热修与自动快照备份** | [`src/tools/builtin/files.py`](src/tools/builtin/files.py) | `EditFileTool._backup()`, `WriteFileTool._backup()`, 自动镜像生成 |
-| **端到端真实 SRE 运维测试套件** | [`tests/test_ops_scenarios_e2e.py`](tests/test_ops_scenarios_e2e.py) | 6 大真实生产场景：配置热修、禁区防御、防断网审计、SOP 挂载、YAML 自检、端到端全链路 |
+| **功能集成真实 SRE 运维测试套件** | [`tests/scenarios/test_ops_scenarios.py`](tests/scenarios/test_ops_scenarios.py) | 6 大真实生产场景：配置热修、禁区防御、防断网审计、SOP 挂载、YAML 自检、功能集成全链路 |
 | **Shell 命令行执行与沙箱 Sidecar** | [`src/tools/builtin/shell.py`](src/tools/builtin/shell.py)<br>[`src/services/bash_shell/`](src/services/bash_shell/) | `BashTool`, `services/bash_shell/runner.py` (独立子进程、非交互约束、日志截断) |
 | **新增/修改 API 接口路由** | [`src/agent_runtime/api/routes/`](src/agent_runtime/api/routes/) | `tasks.py`, `sessions.py`, `settings.py`, `prompts.py`, `skills.py`, `mcp.py` |
 | **SSE 实时事件流与全局广播** | [`src/agent_runtime/observability/hub.py`](src/agent_runtime/observability/hub.py)<br>[`src/agent_runtime/api/routes/system.py`](src/agent_runtime/api/routes/system.py) | `EventHub.publish`, `subscribe_global`, `/events` 与 `/tasks/{id}/stream` |
@@ -133,10 +133,12 @@ backend/src/
 │
 ├── baseagent_config/                 # 【配置中心】
 │   ├── models.py                     # 全局 Pydantic 配置模型（包含 workspaces_dir）
-│   └── loader.py                     # TOML 与环境变量合并加载器
+│   ├── loader.py                     # TOML 与环境变量合并加载器
+│   └── retrieval.py                  # 检索配置快照、热更新与待重建管理
 │
 ├── tools/                            # 【工具实现层】
 │   ├── core/                         # 工具底座（注册表、派发器、Sidecar 客户端）
+│   ├── retrieval/                    # 模型接口、Chroma/SQLite、入库、混合检索、重排、扩展与 CLI
 │   └── builtin/                      # 原生内置工具集
 │       ├── shell.py                  # bash 工具（向 bash_shell 服务发起执行请求）
 │       ├── files.py                  # view_file, edit_file, write_file（支持系统绝对路径与自动备份）
@@ -149,16 +151,22 @@ backend/src/
 │   ├── bash_shell/                   # 隔离沙箱终端服务（含 NETWORK_SUICIDE_RISK 审计拦截）
 │   └── web_search/                   # 独立技术文档与 CVE 检索服务
 │
-├── skills/                           # 【5 大生产级 SRE 运维 SOP 技能包】
+├── skills/                           # 【6 个 SRE 运维技能包】
 │   ├── linux_troubleshooting/        # 系统瓶颈排障（CPU/Load/内存/OOM/磁盘/网络）
 │   ├── service_management/           # Systemd 守护进程治理与平滑重载
 │   ├── docker_container_ops/         # Docker 容器退出诊断与 Compose 治理
 │   ├── safe_config_change/           # 生产配置安全热修与语法预飞检查
 │   ├── log_analysis/                 # journalctl 与 syslog 时序分析
 │   └── shell_best_practices/         # 非交互与安全命令行规范
-│
-└── tests/                            # 【全量 2038 项自动化测试套件】
-    ├── test_ops_scenarios_e2e.py     # 端到端真实 SRE 生产运维测试场景
+```
+
+测试目录位于 `backend/tests/`，与 `src/` 同级：
+
+```
+backend/tests/                         # 单元、集成与实际功能测试
+    ├── retrieval/                    # RAG 单元、集成与真实接口测试
+    ├── scenarios/                   # 跨模块与实际运维场景
+    ├── helpers/                     # 跨模块共用测试辅助代码
     └── ...                           # 各核心模块测试用例
 ```
 
@@ -173,6 +181,8 @@ cd backend && uv run ruff check
 # 2. 类型检查
 uv run pyright src/
 
-# 3. 运行全量 2038 个单测与端到端测试
+# 3. 运行默认测试（排除 real_llm 与 slow）
 uv run pytest
 ```
+
+RAG 使用范围、真实接口测试任务和后端交付证据见 [RAG 文档入口](../docs/rag/README.md)。

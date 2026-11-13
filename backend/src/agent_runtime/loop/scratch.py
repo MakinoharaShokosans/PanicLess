@@ -56,7 +56,7 @@ class _ScratchTool(AgentTool):
 class UpdatePlanTool(_ScratchTool):
     name = UPDATE_PLAN
     description = (
-        "整体替换当前任务的计划（草稿，不影响任务是否结束）。每次给出完整列表；空列表表示清空。"
+        "整体替换当前任务的计划（未完成项会阻止声明全部完成）。每次给出完整列表；空列表表示清空。"
         f"最多 {MAX_PLAN_ITEMS} 条。状态：pending / in_progress / completed。"
     )
     parameters: Mapping[str, Any] = {
@@ -84,12 +84,13 @@ class NoteTool(_ScratchTool):
     description = (
         "记一条本任务内的笔记。kind=fact 记已确认的事实（text）；"
         "kind=failed_attempt 记失败的做法（action、failure_reason、conclusion）。"
+        "kind=experience 记录有证据支持、可复用的稳定处理经验；不要把瞬时机器状态记成经验。"
         "笔记是你自己的陈述，不会被当作经过验证的事实。"
     )
     parameters: Mapping[str, Any] = {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["fact", "failed_attempt"]},
+            "kind": {"type": "string", "enum": ["fact", "experience", "failed_attempt"]},
             "text": {"type": "string"},
             "action": {"type": "string"},
             "failure_reason": {"type": "string"},
@@ -100,7 +101,9 @@ class NoteTool(_ScratchTool):
 
 
 def scratch_tools() -> list[AgentTool]:
-    return [UpdatePlanTool(), NoteTool()]
+    from agent_runtime.loop.conclusion import RecordVerificationTool, ReportOutcomeTool
+
+    return [UpdatePlanTool(), NoteTool(), RecordVerificationTool(), ReportOutcomeTool()]
 
 
 def apply_scratch(scratch: Scratch, name: str, args: Mapping[str, Any]) -> ScratchResult:
@@ -152,11 +155,11 @@ def _update_plan(scratch: Scratch, args: Mapping[str, Any]) -> ScratchResult:
 
 def _note(scratch: Scratch, args: Mapping[str, Any]) -> ScratchResult:
     kind = args.get("kind")
-    if kind == "fact":
+    if kind in ("fact", "experience"):
         text = args.get("text")
         if not isinstance(text, str) or not text.strip():
             return _fail(scratch, "kind=fact 需要非空的 text")
-        text = text.strip()
+        text = ("[experience] " if kind == "experience" else "") + text.strip()
         if len(text) > MAX_FACT_CHARS:
             return _fail(scratch, f"单条事实不超过 {MAX_FACT_CHARS} 字符，请精简")
         if text in scratch.facts:
@@ -187,4 +190,4 @@ def _note(scratch: Scratch, args: Mapping[str, Any]) -> ScratchResult:
             "已记录。",
             True,
         )
-    return _fail(scratch, "kind 必须是 fact 或 failed_attempt")
+    return _fail(scratch, "kind 必须是 fact、experience 或 failed_attempt")

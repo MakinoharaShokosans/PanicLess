@@ -93,7 +93,14 @@ export function Sidebar({ collapsedRail = false }: { collapsedRail?: boolean }) 
     const out: { session: Session; activity: Activity }[] = [];
     for (const s of sortedSessions) {
       const a = activity[s.session_id];
-      if (a && (a.status === 'waiting_for_approval' || a.status === 'failed') && !s.archived) {
+      if (
+        a &&
+        (a.status === 'waiting_for_approval' ||
+          a.status === 'failed' ||
+          a.status === 'needs_input' ||
+          a.status === 'blocked') &&
+        !s.archived
+      ) {
         out.push({ session: s, activity: a });
       }
     }

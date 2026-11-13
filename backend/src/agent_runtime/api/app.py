@@ -16,14 +16,18 @@ from fastapi.staticfiles import StaticFiles
 from agent_runtime.api.deps import ApiServices
 from agent_runtime.api.errors import TRACE_HEADER, install_handlers
 from agent_runtime.api.routes import (
+    diagnostics,
     files,
     mcp,
+    operator_settings,
     prompts,
+    rollback,
     sessions,
     settings,
     skills,
     system,
     tasks,
+    terminal,
     workspaces,
 )
 from agent_runtime.api.security import AccessGate
@@ -43,7 +47,21 @@ def create_app(services: ApiServices, *, token: str | None) -> FastAPI:
     )
     app.state.services = services
     install_handlers(app)
-    for module in (workspaces, sessions, settings, tasks, files, system, prompts, skills, mcp):
+    for module in (
+        workspaces,
+        sessions,
+        settings,
+        tasks,
+        files,
+        system,
+        prompts,
+        skills,
+        mcp,
+        operator_settings,
+        diagnostics,
+        rollback,
+        terminal,
+    ):
         app.include_router(module.router, prefix=API_PREFIX)
 
     @app.get("/events", include_in_schema=False)
@@ -71,6 +89,7 @@ def create_app(services: ApiServices, *, token: str | None) -> FastAPI:
                 )
             return response
     else:
+
         @app.get("/", include_in_schema=False)
         async def root() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
             return {"name": "BaseAgent", "api": API_PREFIX}

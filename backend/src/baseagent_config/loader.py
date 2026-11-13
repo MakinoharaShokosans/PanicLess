@@ -101,7 +101,7 @@ def load_settings(
     create_home: bool = True,
     require_models: bool = True,
 ) -> LoadedSettings:
-    """加载并校验配置。任何问题都抛 :class:`ConfigError`，调用方应据此拒绝启动。
+    """加载并校验配置。结构错误抛 :class:`ConfigError`；可选检索服务缺密钥只告警。
 
     ``overrides`` 对应命令行参数，嵌套字典，优先级最高。``create_home`` 为假时不创建数据目录
     （只读检查用）。``require_models`` 为假时不要求模型端点有密钥——sidecar 按设计拿不到密钥，
@@ -122,6 +122,8 @@ def load_settings(
     if home and create_home:
         _ensure_home(home, problems)
     endpoints, warnings = _usable_endpoints(settings, problems if require_models else [])
+    if require_models:
+        warnings += _retrieval_warnings(settings)
     warnings += _trust_warnings(settings)
 
     if problems or home is None or paths is None:
@@ -375,4 +377,21 @@ def _trust_warnings(settings: Settings) -> list[str]:
             "规则文件：已开启 context.rules.allow_workspace，工作区内的 CLAUDE.md / AGENTS.md "
             "会进入提示词；仅在信任该工作区时使用"
         )
+    return warnings
+
+
+def _retrieval_warnings(settings: Settings) -> list[str]:
+    """缺少可选服务凭据不阻止启动；客户端调用时校验，检索可按通道降级。"""
+    warnings = []
+    for name in ("embedding", "rerank"):
+        config = getattr(settings.retrieval, name)
+        if (
+            config.enabled
+            and config.api_key_env
+            and not os.environ.get(config.api_key_env, "").strip()
+        ):
+            warnings.append(
+                f"retrieval.{name}：缺少鉴权环境变量 {config.api_key_env}；"
+                "应用仍可启动，该模型通道调用时不可用"
+            )
     return warnings

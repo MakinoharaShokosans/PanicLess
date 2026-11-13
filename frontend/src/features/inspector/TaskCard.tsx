@@ -174,7 +174,7 @@ export function TaskCard({ sessionId }: { sessionId: string }) {
               <Square size={13} fill="currentColor" />
             </IconButton>
           )}
-          {run && !live && run.status !== 'succeeded' && (
+          {run && !live && run.status === 'failed' && (
             <IconButton label="从检查点续跑" className="h-7 w-7" onClick={() => void resume()}>
               <Play size={14} />
             </IconButton>
@@ -221,6 +221,68 @@ export function TaskCard({ sessionId }: { sessionId: string }) {
               </span>
             </div>
           </div>
+
+          {run.conclusion && (
+            <div className="rounded border border-ink/10 bg-ink/[0.02] p-2 text-[12px] space-y-1">
+              <div className="flex items-center justify-between text-2xs font-semibold text-ink-ghost">
+                <span>任务结论</span>
+                <span
+                  className={cn(
+                    'rounded px-1.5 py-0.2',
+                    run.conclusion.status === 'completed'
+                      ? 'bg-ok/10 text-ok'
+                      : run.conclusion.status === 'partial'
+                        ? 'bg-warn/10 text-warn'
+                        : run.conclusion.status === 'needs_input'
+                          ? 'bg-accent/10 text-accent'
+                          : 'bg-bad/10 text-bad',
+                  )}
+                >
+                  {run.conclusion.status === 'completed'
+                    ? '已完成'
+                    : run.conclusion.status === 'partial'
+                      ? '部分完成'
+                      : run.conclusion.status === 'needs_input'
+                        ? '需补充信息'
+                        : '受阻'}
+                </span>
+              </div>
+              <p className="text-ink-heavy text-[11.5px] line-clamp-2">{run.conclusion.summary}</p>
+              {run.conclusion.remaining && run.conclusion.remaining.length > 0 && (
+                <p className="text-warn text-[10.5px]">剩余 {run.conclusion.remaining.length} 项未完成</p>
+              )}
+            </div>
+          )}
+
+          {run.verificationRecords && run.verificationRecords.length > 0 && (
+            <div className="rounded border border-ink/10 bg-ink/[0.02] p-2 text-[12px] space-y-1">
+              <div className="flex items-center justify-between text-2xs font-semibold text-ink-ghost">
+                <span>验证记录</span>
+                <span className="font-mono text-[10px] text-ink-subtle">
+                  {run.verificationRecords.filter((r) => r.result === 'passed').length} / {run.verificationRecords.length} 通过
+                </span>
+              </div>
+              <ul className="space-y-0.5 text-[11px]">
+                {run.verificationRecords.slice(0, 3).map((v, i) => (
+                  <li key={i} className="flex items-center justify-between gap-1 text-[10.5px]">
+                    <span className="truncate flex-1 text-ink-subtle">{v.goal}</span>
+                    <span
+                      className={cn(
+                        'shrink-0 font-medium',
+                        v.result === 'passed'
+                          ? 'text-ok'
+                          : v.result === 'failed'
+                            ? 'text-bad'
+                            : 'text-warn',
+                      )}
+                    >
+                      {v.result === 'passed' ? '通过' : v.result === 'failed' ? '未通过' : '不确定'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {deliverables.length > 0 && (
             <ul className="space-y-0.5 text-[12.5px]">

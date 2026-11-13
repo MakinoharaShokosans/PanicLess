@@ -1,7 +1,7 @@
 """循环内核：调模型；有工具调用就执行并把结果追加进 transcript，再调模型；没有则结束。
 
-设计文档：docs/02_runtime/02_main_loop.md。内核不含预算、阶段、路由或验收；一切护栏与记录
-都挂在固定接缝上（模型接缝、工具包装层、Recorder）。
+无工具调用代表本轮结束；业务完成情况由显式结论决定，未声明时记为部分完成。
+护栏与记录挂在固定接缝上（模型接缝、工具包装层、Recorder）。
 
 回合有两个提交点：模型回复追加之后、工具结果追加之后。先提交，后发事件：客户端看到的
 进度不会比可恢复的进度更远。
@@ -26,11 +26,14 @@ from agent_runtime.core import (
     check_invariants,
     unanswered_calls,
 )
+from agent_runtime.core.state import TaskConclusion
 from agent_runtime.llm import LLMBadRequest
 from agent_runtime.loop.errors import CanaryLeak, LoopAborted
 from agent_runtime.loop.model import ModelStep
 
-OutcomeStatus = Literal["succeeded", "terminated", "waiting_for_approval"]
+OutcomeStatus = Literal[
+    "succeeded", "partial", "needs_input", "blocked", "terminated", "waiting_for_approval"
+]
 
 
 #: 工具包装层：状态与本批调用进，状态增量出。挂起时抛 ``ApprovalRequired``
@@ -65,6 +68,7 @@ class TaskRuntime:
     max_consecutive_blocks: int = 5
     #: 任务内压缩：每次调模型前问一次要不要压；窗口溢出时强制压一次再重试。None 表示不压缩
     compact: CompactStep | None = None
+    before_model: Callable[[AgentState], Awaitable[AgentState]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +87,12 @@ class TaskOutcome:
     def status(self) -> OutcomeStatus:
         if self.approval_request is not None:
             return "waiting_for_approval"
-        return "terminated" if self.termination_reason else "succeeded"
+        if self.termination_reason:
+            return "terminated"
+        conclusion = self.state.conclusion
+        if conclusion is None:
+            return "partial"
+        return "succeeded" if conclusion.status == "completed" else conclusion.status
 
 
 async def run(rt: TaskRuntime, state: AgentState) -> TaskOutcome:
@@ -99,6 +108,8 @@ async def run(rt: TaskRuntime, state: AgentState) -> TaskOutcome:
     while True:
         if not pending:
             state = await _compacted(rt, state, force=False)
+            if rt.before_model is not None:
+                state = await rt.before_model(state)
             try:
                 reply = await rt.model(state)
             except CanaryLeak as leak:
@@ -114,6 +125,17 @@ async def run(rt: TaskRuntime, state: AgentState) -> TaskOutcome:
                 continue
             recovered = False
             state = apply_update(state, {"messages": [reply]})
+            if not reply.tool_calls and state.conclusion is None:
+                state = apply_update(
+                    state,
+                    {
+                        "conclusion": TaskConclusion(
+                            status="partial",
+                            summary="模型已结束回复，但未声明任务目标的完成情况。",
+                            remaining=tuple(p.title for p in state.plan if p.status != "completed"),
+                        )
+                    },
+                )
             check_invariants(state)
             await rt.checkpoints.commit(state)
             await _notify(rt.events.model_replied(reply, state))

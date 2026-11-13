@@ -13,6 +13,7 @@ from agent_runtime.context import PromptLibrary
 from agent_runtime.memory import CompactionResult, MemoryStore
 from agent_runtime.observability import EventHub, Redactor
 from agent_runtime.runtime.service import TaskService
+from agent_runtime.runtime.terminal import RuntimeTerminal
 from baseagent_config import Settings
 
 JsonList = Callable[[], list[dict[str, Any]]]
@@ -42,6 +43,8 @@ class ApiServices:
     #: 工作区文件接口的根之外的家目录（用于 ``~`` 展开与主目录自身检查）
     home: Path = field(default_factory=Path.home)
     workspaces_dir: Path | None = None
+    backups_dir: Path | None = None
+    terminal: RuntimeTerminal | None = None
     introspection: Introspection = field(default_factory=Introspection)
     #: 内置提示词；设置接口用它给出"恢复默认"的原文
     prompts: PromptLibrary = field(default_factory=PromptLibrary)

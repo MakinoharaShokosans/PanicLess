@@ -1,11 +1,11 @@
 [project]
 name = "baseagent"
 version = "0.1.0"
-description = "BaseAgent: 自研 Agent 运行时底座（无 LangGraph、无 RAG），给想自己做 Agent 的开发者当起点"
+description = "LinuxOpsPilot: 自研 SRE Agent 运行时，提供运维工具与 RAG 知识检索基础能力"
 readme = "README.md"
 requires-python = ">=3.12"
 # 版本只写下限；实际版本由 uv.lock 固定，升级是显式动作（uv lock --upgrade-package <name>）。
-# 选型理由见 docs/01_architecture/05_tech_stack.md。
+# 当前依赖见下表，知识检索选型见 docs/rag/README.md。
 dependencies = [
     # HTTP 接入
     "fastapi>=0.115",
@@ -28,6 +28,9 @@ dependencies = [
     # 技能元数据
     "pyyaml>=6.0",
     "ddgs>=9",
+    "chromadb>=1.5.9,<2",
+    "rank-bm25>=0.2.2,<0.3",
+    "jieba>=0.42.1,<0.43",
 ]
 
 [project.scripts]
@@ -81,7 +84,6 @@ addopts = "-m 'not real_llm and not slow' --strict-markers"
 markers = [
     "unit: 单元测试",
     "integration: 集成测试",
-    "e2e: 端到端测试",
     "security: 安全与对抗测试",
     "slow: 慢测试，默认不运行",
     "real_llm: 需要真实模型密钥与网络，默认不运行，显式 -m real_llm 触发",
@@ -123,7 +125,7 @@ strict = [
 
 # ------------------------------------------------------------------------------
 # 模块依赖方向（import-linter）
-# 规则出处：docs/01_architecture/03_code_layout_and_roadmap.md §1
+# 当前依赖方向以本文件下方的 import-linter contracts 为准。
 # ------------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = [

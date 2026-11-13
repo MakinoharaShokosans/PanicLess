@@ -11,7 +11,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from loguru import logger
 
@@ -35,7 +35,9 @@ from agent_runtime.runtime.memory_flow import MemoryFlow
 from agent_runtime.runtime.run import TaskRequest
 from agent_runtime.runtime.runner import TaskRunner, TaskSnapshot
 
-_TERMINAL: Final = frozenset({"succeeded", "failed", "cancelled", "terminated"})
+_TERMINAL: Final = frozenset(
+    {"succeeded", "partial", "needs_input", "blocked", "failed", "cancelled", "terminated"}
+)
 _RESUMABLE: Final = frozenset({"failed"})
 
 
@@ -71,6 +73,8 @@ class TaskView:
     started_at: float | None
     finished_at: float | None
     artifact_count: int
+    conclusion: dict[str, object] | None = None
+    verification_records: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +141,9 @@ class TaskService:
         session = await self._memory.get_session(session_id)
         workspace = await self._memory.get_workspace(session.workspace_id)
         level = self._resolve_level(permission_level, confirm_full_permissions)
-        context = await self._flow.prepare(session_id) if self._flow is not None else None
+        context = (
+            await self._flow.prepare(session_id, query=text) if self._flow is not None else None
+        )
         request = TaskRequest(
             workspace_id=workspace.workspace_id,
             workspace_path=workspace.root_path,
@@ -207,6 +213,17 @@ class TaskService:
             started_at=record.started_at,
             finished_at=record.finished_at,
             artifact_count=len(state.artifacts) if state else record.artifact_count,
+            conclusion=cast(
+                dict[str, object], self._redactor.value(state.conclusion.model_dump(mode="json"))
+            )
+            if state and state.conclusion
+            else None,
+            verification_records=tuple(
+                cast(dict[str, object], self._redactor.value(r.model_dump(mode="json")))
+                for r in state.verification_records
+            )
+            if state
+            else (),
         )
 
     def _snapshot_of(self, task_id: str) -> TaskSnapshot | None:
@@ -256,6 +273,28 @@ class TaskService:
         self._decided[task_id] = (decision.approval_id, decision.approved)
         await self._memory.update_task(task_id, status="running")
         return await self.get(task_id)
+
+    async def send_message(self, task_id: str, content: str) -> dict[str, object]:
+        await self._need(task_id)
+        text = content.strip()
+        if not text or len(text) > self._goal_max:
+            raise TaskGoalError(f"content 必须为 1 至 {self._goal_max} 字符")
+        item = await self.runner.send_message(task_id, text)
+        return {"task_id": task_id, **item, "status": "queued"}
+
+    async def messages(self, task_id: str) -> list[dict[str, object]]:
+        await self._need(task_id)
+        state = await self._checkpoints.load(task_id)
+        cursor = state.inbox_cursor if state is not None else 0
+        redactor = self._redactor.with_secrets([state.canary_token]) if state else self._redactor
+        return [
+            {
+                **item,
+                "content": redactor.text(str(item["content"])),
+                "status": "consumed" if int(str(item["message_id"])) <= cursor else "queued",
+            }
+            for item in await self._checkpoints.inbox(task_id)
+        ]
 
     # ------------------------------------------------------------------ 续跑与取消
 
@@ -408,6 +447,9 @@ class TaskService:
             and snapshot.status
             in (
                 "succeeded",
+                "partial",
+                "needs_input",
+                "blocked",
                 "terminated",
             )
         ):

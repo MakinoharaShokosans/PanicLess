@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -178,6 +178,8 @@ class TaskOut(_Response):
     started_at: float | None
     finished_at: float | None
     artifact_count: int
+    conclusion: dict[str, Any] | None = None
+    verification_records: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DecisionOut(_Response):

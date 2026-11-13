@@ -38,6 +38,7 @@ class ExecuteRequest(BaseModel):
     step_id: int = Field(ge=0)
     command: str = Field(max_length=100_000)
     timeout_sec: float | None = Field(default=None, gt=0)
+    output_max_bytes: int | None = Field(default=None, ge=256, le=1_048_576)
     #: 调用方声明的写入路径，与命令里的显式写入目标一并校验
     write_paths: list[str] = Field(default_factory=list, max_length=100)
 
@@ -143,6 +144,7 @@ def create_app(settings: ShellSettings) -> FastAPI:
                 log_path=settings.artifacts_dir / body.task_id / f"step_{body.step_id}_bash.log",
                 limits=limits,
                 distill=distill,
+                output_max_bytes=body.output_max_bytes or cfg.output_max_bytes,
             )
         finally:
             await budget.release(grant, duration_sec=time.monotonic() - began)

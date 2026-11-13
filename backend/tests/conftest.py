@@ -1,6 +1,6 @@
 """共享夹具。
 
-原则（见 docs/11_testing/01_strategy.md）：默认离线、确定、隔离。
+原则：默认离线、确定、隔离。目录规则见 docs/testing/测试目录分组.md。
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Path, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_runtime.api.deps import ApiServices, services_of
 from agent_runtime.api.errors import ApiError
@@ -49,6 +50,8 @@ def task_out(v: TaskView) -> TaskOut:
         started_at=v.started_at,
         finished_at=v.finished_at,
         artifact_count=v.artifact_count,
+        conclusion=v.conclusion,
+        verification_records=list(v.verification_records),
     )
 
 
@@ -78,6 +81,21 @@ async def submit_task(session_id: SessionId, body: TaskCreate, svc: Services) ->
 @router.get("/tasks/{task_id}", response_model=TaskOut)
 async def get_task(task_id: TaskId, svc: Services) -> TaskOut:
     return task_out(await svc.tasks.get(task_id))
+
+
+class TaskMessageBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+@router.post("/tasks/{task_id}/messages", status_code=202)
+async def send_message(task_id: TaskId, body: TaskMessageBody, svc: Services) -> dict[str, object]:
+    return await svc.tasks.send_message(task_id, body.content)
+
+
+@router.get("/tasks/{task_id}/messages")
+async def messages(task_id: TaskId, svc: Services) -> list[dict[str, object]]:
+    return await svc.tasks.messages(task_id)
 
 
 @router.post("/tasks/{task_id}/approve", response_model=DecisionOut, status_code=202)

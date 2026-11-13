@@ -2,7 +2,8 @@
 
 回合内有两个提交点：模型回复带工具调用时先提交，工具结果追加后再提交。崩溃落在两者之间时，
 检查点尾部是一条带未配对 ``tool_calls`` 的助手消息，工具可能已部分或全部执行。无法区分
-“已派发”与“未派发”，所以一律按“可能已执行”处理：全部幂等则丢弃这条消息重新来过，
+“已派发”与“未派发”。本模块只用于没有逐调用日志的旧检查点；新任务由 resume 与工具
+包装层按日志恢复。旧记录按“可能已执行”处理：全部幂等则丢弃这条消息重新来过，
 否则为每个调用合成“执行结果未知”，交给模型核验。把“至少一次”收敛成“至多一次加显式的未知结果”。
 
 设计文档：docs/02_runtime/03_checkpoint_and_resume.md §5。纯函数，不做 I/O。
@@ -10,11 +11,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from agent_runtime.core import AgentState, Message, ToolCall, apply_update, unanswered_calls
+from agent_runtime.core import (
+    AgentState,
+    Message,
+    ToolCall,
+    ToolResult,
+    apply_update,
+    unanswered_calls,
+)
 
 RecoveryAction = Literal["none", "retry", "synthesized"]
 
@@ -58,17 +66,33 @@ def repair_tail(state: AgentState, is_idempotent: Callable[[str], bool]) -> Reco
     )
 
 
-def mark_cancelled(state: AgentState) -> AgentState:
+def mark_cancelled(
+    state: AgentState,
+    results: Mapping[str, ToolResult | None] | None = None,
+) -> AgentState:
     """取消：为未完成的调用补“已取消”结果以保持原子对；清掉待审批请求与已绑定决策。
 
     终态由检查点的 ``outcome`` 列表达，不在状态里。
     """
-    replies = [
-        Message(role="tool", content=NOT_EXECUTED_CANCELLED, tool_call_id=c.id, name=c.name)
-        for c in unanswered_calls(state.messages)
-    ]
+    replies: list[Message] = []
+    artifacts = dict(state.artifacts)
+    for call in unanswered_calls(state.messages):
+        content = NOT_EXECUTED_CANCELLED
+        if results is not None and call.id in results:
+            result = results[call.id]
+            content = UNKNOWN_RESULT if result is None else result.content or result.error or ""
+            if result is not None and result.artifact_id and result.artifact_path:
+                artifacts[result.artifact_id] = result.artifact_path
+        replies.append(Message(role="tool", content=content, tool_call_id=call.id, name=call.name))
     return apply_update(
-        state, {"messages": replies, "pending_approval": None, "approval_decision": None}
+        state,
+        {
+            "messages": replies,
+            "pending_approval": None,
+            "approval_decision": None,
+            "artifacts": artifacts,
+            "conclusion": None,
+        },
     )
 
 

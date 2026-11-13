@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, Protocol, cast
 
 from loguru import logger
 
@@ -21,9 +22,11 @@ from agent_runtime.core import (
     Message,
     PendingApproval,
     ToolCall,
-    Verification,
+    ToolResult,
+    Trust,
     apply_update,
 )
+from agent_runtime.core.state import ToolObservation
 from agent_runtime.guardrails import (
     LoopLimits,
     PermissionDecision,
@@ -37,6 +40,7 @@ from agent_runtime.guardrails import (
     update_consecutive_errors,
 )
 from agent_runtime.guardrails.permissions import LEVEL_ORDER
+from agent_runtime.loop.conclusion import ASSESSMENT_TOOLS, assess
 from agent_runtime.loop.proxy import McpProxy, Resolved
 from agent_runtime.loop.scratch import SCRATCH_TOOLS, Scratch, apply_scratch
 from tools.core import ToolDispatcher
@@ -71,6 +75,16 @@ class ApprovalHooks:
     check_binding: Callable[[AgentState, Iterable[str]], None]
 
 
+class CallJournal(Protocol):
+    def enqueue(self, task_id: str, turn: int, call_ids: Sequence[str]) -> None: ...
+
+    def load(self, task_id: str, turn: int, call_id: str) -> tuple[str, ToolResult | None, str]: ...
+    def start(self, task_id: str, turn: int, call_id: str) -> None: ...
+    def finish(
+        self, task_id: str, turn: int, call_id: str, result: ToolResult, trust: str
+    ) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ToolRunnerDeps:
     dispatcher: ToolDispatcher
@@ -88,6 +102,7 @@ class ToolRunnerDeps:
     proxy: McpProxy | None = None
     #: 参数校验：（状态，调用）→ 失败说明；返回 None 表示放行。在代理解析之后、权限闸门之前
     guards: tuple[Callable[[AgentState, ToolCall], str | None], ...] = ()
+    journal: CallJournal | None = None
 
 
 _HANDLE = re.compile(r"artifact://([A-Za-z0-9_.-]+)")
@@ -151,7 +166,8 @@ def make_tool_runner(
         scratch = Scratch(state.plan, state.facts, state.failed_attempts)
 
         # 4. 派发：草稿工具就地处理；只读并发，其余按调用顺序串行
-        results = await _dispatch(deps, resolved, synthetic)
+        results = await _dispatch(deps, state, resolved, synthetic)
+        assessment_state = state
 
         # 5. 后处理
         artifacts = dict(state.artifacts)
@@ -160,10 +176,16 @@ def make_tool_runner(
         plan_changed = False
         for r in resolved:
             call = r.call
+            assessment_state = apply_update(assessment_state, {"conclusion": None})
             pre = synthetic.get(r.id)
             detail: dict[str, object] = {"call_id": r.id}
             if pre is not None:
                 content, failed = pre.text, pre.counts_as_failure
+            elif call.name in ASSESSMENT_TOOLS:
+                assessment_state = apply_update(assessment_state, {"plan": scratch.plan})
+                changes, content, ok = assess(assessment_state, call.name, call.args)
+                assessment_state = apply_update(assessment_state, changes)
+                failed = not ok
             elif call.name in SCRATCH_TOOLS:
                 outcome = apply_scratch(scratch, call.name, call.args)
                 scratch, content, failed = outcome.scratch, outcome.text, not outcome.ok
@@ -201,8 +223,48 @@ def make_tool_runner(
                 changed = result.meta.get("changed_files")
                 if isinstance(changed, list):
                     detail["changed_files"] = changed
+                backup = result.meta.get("backup")
+                if isinstance(backup, dict):
+                    detail["backup"] = backup
                 if result.meta.get("timed_out") is True:
                     detail["timed_out"] = True
+                revision = assessment_state.work_revision
+                action = check_permission(
+                    deps.policy, state.permission_level, r.target.name, r.target.args
+                )
+                changed_state = (
+                    (
+                        r.target.name in _EDIT_TOOLS
+                        and (not failed or result.meta.get("execution_unknown"))
+                    )
+                    or bool(result.meta.get("changed_files"))
+                    or (
+                        r.target.name in deps.policy.bash_tools
+                        and action.action_type in {"workspace_write", "global_env", "privileged"}
+                    )
+                )
+                if changed_state:
+                    revision += 1
+                    assessment_state = apply_update(
+                        assessment_state,
+                        {
+                            "work_revision": revision,
+                            "verification": "unchecked",
+                            "conclusion": None,
+                        },
+                    )
+                observation = ToolObservation(
+                    call_id=r.id,
+                    tool=r.target.name,
+                    ok=not failed,
+                    revision=revision,
+                    artifact_id=str(detail.get("artifact_id", "")),
+                    changed_state=changed_state,
+                )
+                assessment_state = apply_update(
+                    assessment_state,
+                    {"observations": (*assessment_state.observations, observation)},
+                )
             failures += failed
             detail["ok"] = not failed
             detail.setdefault("artifact_id", _artifact_of(content) or "")
@@ -217,17 +279,16 @@ def make_tool_runner(
             messages.append(Message(role="user", content=build_error_notice(errors)))
             await _emit(deps, "guard.error_notice", {"consecutive_errors": errors})
 
-        verification = _verification_after(
-            state.verification,
-            [(r.target.name, r.id) for r in resolved],
-            {r.id: results[r.id].result.failed for r in resolved if r.id in results},
-        )
         update: dict[str, object] = {
             "messages": messages,
             "consecutive_errors": errors,
             "fingerprint_history": history,
             "consecutive_blocks": state.consecutive_blocks + 1 if loop else 0,
-            "verification": verification,
+            "verification": assessment_state.verification,
+            "verification_records": assessment_state.verification_records,
+            "observations": assessment_state.observations,
+            "work_revision": assessment_state.work_revision,
+            "conclusion": assessment_state.conclusion,
             "artifacts": artifacts,
             "pending_approval": None,
             "approval_decision": None,
@@ -260,20 +321,50 @@ def _resolve(deps: ToolRunnerDeps, state: AgentState, call: ToolCall) -> Resolve
 
 
 async def _dispatch(
-    deps: ToolRunnerDeps, resolved: list[_Call], synthetic: Mapping[str, _Synthetic]
+    deps: ToolRunnerDeps,
+    state: AgentState,
+    resolved: list[_Call],
+    synthetic: Mapping[str, _Synthetic],
 ):  # type: ignore[no-untyped-def]
     """返回 call_id -> 结果。连续的只读调用并发，其余逐个串行，组间保持调用顺序。"""
     from tools.core.dispatcher import DispatchedResult
 
     out: dict[str, DispatchedResult] = {}
-    todo = [r for r in resolved if r.id not in synthetic and r.call.name not in SCRATCH_TOOLS]
+    todo = [
+        r
+        for r in resolved
+        if r.id not in synthetic and r.call.name not in SCRATCH_TOOLS | ASSESSMENT_TOOLS
+    ]
+    if deps.journal is not None:
+        deps.journal.enqueue(state.task_id, turn_index(state), [r.id for r in todo])
     group: list[_Call] = []
 
     async def flush() -> None:
         if not group:
             return
         batch = [(r.id, r.target.name, r.target.args) for r in group]
-        for item in await deps.dispatcher.dispatch(batch):
+
+        async def execute(spec):
+            call_id, name, _ = spec
+            journal = deps.journal
+            turn = turn_index(state)
+            if journal is not None:
+                status, result, trust = journal.load(state.task_id, turn, call_id)
+                if result is not None:
+                    return DispatchedResult(call_id, name, result, cast(Trust, trust))
+                if status == "running":
+                    result = ToolResult.failure(
+                        "执行结果未知：此调用在中断前已开始但未保存结果，请核验后再决定是否重试",
+                        meta={"execution_unknown": True},
+                    )
+                    return DispatchedResult(call_id, name, result, "untrusted")
+                journal.start(state.task_id, turn, call_id)
+            item = (await deps.dispatcher.dispatch([spec]))[0]
+            if journal is not None:
+                journal.finish(state.task_id, turn, call_id, item.result, item.trust)
+            return item
+
+        for item in await asyncio.gather(*(execute(spec) for spec in batch)):
             out[item.tool_call_id] = item
         group.clear()
 
@@ -289,25 +380,6 @@ async def _dispatch(
 
 
 _EDIT_TOOLS: Final = frozenset({"write_file", "edit_file"})
-_COMMAND_TOOL: Final = "bash"
-
-
-def _verification_after(
-    current: Verification, calls: Iterable[tuple[str, str]], failed: Mapping[str, bool]
-) -> Verification:
-    """按调用顺序更新“改动后验证了没有”：改文件成功 → 未验证；之后的命令按成败定 passed / failed。
-
-    没有改过文件时命令不影响它；被拦截或拒绝的调用没有执行，不计。
-    """
-    state: Verification = current
-    for name, call_id in calls:
-        if call_id not in failed:
-            continue
-        if name in _EDIT_TOOLS and not failed[call_id]:
-            state = "unchecked"
-        elif name == _COMMAND_TOOL and state != "none":
-            state = "failed" if failed[call_id] else "passed"
-    return state
 
 
 def _unique_id(base: str, taken: Mapping[str, str]) -> str:
@@ -326,7 +398,11 @@ async def _gate(
     decisions: dict[str, PermissionDecision] = {}
     escalated: list[_Call] = []
     for r in calls:
-        if r.target.error or not deps.dispatcher.knows(r.target.name):
+        if (
+            r.call.name in ASSESSMENT_TOOLS
+            or r.target.error
+            or not deps.dispatcher.knows(r.target.name)
+        ):
             continue  # 不会被执行的调用不值得打扰人
         decision = check_permission(
             deps.policy, state.permission_level, r.target.name, r.target.args

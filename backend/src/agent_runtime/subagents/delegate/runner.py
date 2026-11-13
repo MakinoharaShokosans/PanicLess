@@ -1,7 +1,7 @@
 """子智能体执行循环：步数与单次运行超时封顶的朴素异步循环，没有 Token 额度。
 
 设计文档：06_subagents/01_dynamic_delegation.md §4。越级即失败，绝不挂起（也不参考会话白名单）；
-子级的中间观察值只在这里，不进主状态、不进检查点、不进事件。
+子级会话与完整观察值独立落盘，续问沿用上下文；事件仍不携带原始工具输出。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Protocol
 from loguru import logger
 from pydantic import BaseModel
 
-from agent_runtime.core import Message, ToolCall
+from agent_runtime.core import Message, ToolCall, unanswered_calls
 from agent_runtime.guardrails import (
     PermissionPolicy,
     check_permission,
@@ -27,9 +27,11 @@ from agent_runtime.subagents.delegate.report import (
     AccessSet,
     DelegateLimits,
     RawSubagentReport,
+    RawSubFinding,
     SubagentReport,
     build_report,
 )
+from agent_runtime.subagents.delegate.store import ChildConversation, ChildStore
 from agent_runtime.subagents.usage import ChildUsage
 from tools.core import ToolDispatcher, ToolRegistry
 
@@ -84,19 +86,44 @@ class SubagentRunner:
         self._depth = depth
         self._emit = emit
 
-    async def run(self, role: str, goal: str, budget: ChildUsage, max_steps: int) -> SubagentReport:
+    async def run(
+        self,
+        role: str,
+        goal: str,
+        budget: ChildUsage,
+        max_steps: int,
+        *,
+        conversation: ChildConversation | None = None,
+        store: ChildStore | None = None,
+    ) -> SubagentReport:
         started = time.monotonic()
-        access = AccessSet()
+        child = conversation or ChildConversation.create(
+            role, sorted(s.name for s in self._registry.schemas())
+        )
+        access = child.access
+
+        def save() -> None:
+            if store is not None:
+                store.save(child)
+
         warnings: list[str] = []
         steps = calls = 0
-        messages: list[Message] = [
-            Message(role="system", content=self._system.replace("{role}", role)),
-            Message(role="user", content=goal),
-        ]
+        messages = child.messages
+        if not messages:
+            messages.append(Message(role="system", content=self._system.replace("{role}", role)))
+        # Interrupted operations may have run: keep saved results and never silently retry.
+        for pending in unanswered_calls(messages):
+            messages.append(
+                _tool_message(pending, "上次执行中断，结果未知；先检查实际状态，不要直接重复操作。")
+            )
+        messages.append(Message(role="user", content=goal))
+        child.status = "running"
+        save()
         await self._say(
             "subagent.started",
             {
                 "role": role,
+                "subtask_id": child.subtask_id,
                 "depth": self._depth,
                 "assigned_tools": sorted(s.name for s in self._registry.schemas()),
                 "max_steps": max_steps,
@@ -119,21 +146,41 @@ class SubagentRunner:
                     break
                 message = response.message
                 messages.append(message)
+                save()
                 await self._say(
                     "subagent.step", {"step": steps, "tools": [c.name for c in message.tool_calls]}
                 )
                 if not message.tool_calls:
                     break
-                results = await self._run_calls(message.tool_calls, access, role, steps)
                 calls += len(message.tool_calls)
-                messages += results
+                try:
+                    await asyncio.wait_for(
+                        self._run_calls(message.tool_calls, access, steps, child, save),
+                        max(budget.remaining_wall_sec, 0.001),
+                    )
+                except TimeoutError:
+                    warnings.append("工具执行达到子任务时间上限，已保存完成的观察")
+                    break
             else:
                 warnings.append(f"达到步数上限 {max_steps}")
+            for pending in unanswered_calls(messages):
+                messages.append(
+                    _tool_message(pending, "执行中断或超时，结果未知；请先核查实际状态。")
+                )
+            save()
             raw = await self._finalise(messages, budget, warnings)
+        except asyncio.CancelledError:
+            child.status = "interrupted"
+            save()
+            raise
         except Exception as exc:  # 任何内部异常都降级，不让主循环看到
             logger.warning("子智能体失败：{}", type(exc).__name__)
             warnings.append(f"子智能体出错：{type(exc).__name__}")
             raw = RawSubagentReport()
+        if not raw.findings:
+            raw = self._intermediate(messages, warnings)
+        if warnings and raw.findings and not raw.unresolved:
+            raw.unresolved.append("本次执行存在中断或降级，需核对警告后继续调查")
         report = build_report(
             raw,
             access=access,
@@ -144,10 +191,13 @@ class SubagentRunner:
             elapsed_sec=time.monotonic() - started,
             extra_warnings=tuple(warnings),
         )
+        child.finish(report)
+        save()
         await self._say(
             "subagent.finished",
             {
                 "role": role,
+                "subtask_id": child.subtask_id,
                 "status": report.status,
                 "steps_used": report.steps_used,
                 "tool_calls": report.tool_calls,
@@ -179,16 +229,21 @@ class SubagentRunner:
             return None
 
     async def _run_calls(
-        self, calls: Sequence[ToolCall], access: AccessSet, role: str, step: int
-    ) -> list[Message]:
-        allowed: list[ToolCall] = []
-        out: dict[str, Message] = {}
-        for call in calls:
+        self,
+        calls: Sequence[ToolCall],
+        access: AccessSet,
+        step: int,
+        child: ChildConversation,
+        save: Callable[[], None],
+    ) -> None:
+        async def execute(call: ToolCall) -> None:
             decision = check_permission(self._policy, self._level, call.name, call.args)
             if not self._registry.knows(call.name):
-                out[call.id] = _tool_message(call, f"没有工具 {call.name}：你只能使用被分配的工具")
+                child.messages.append(
+                    _tool_message(call, f"没有工具 {call.name}：你只能使用被分配的工具")
+                )
             elif not decision.allowed:
-                out[call.id] = _tool_message(call, _BLOCKED.format(reason=decision.reason))
+                child.messages.append(_tool_message(call, _BLOCKED.format(reason=decision.reason)))
                 await self._say(
                     "subagent.blocked",
                     {
@@ -201,28 +256,68 @@ class SubagentRunner:
                     },
                 )
             else:
-                allowed.append(call)
-        dispatched = await self._dispatcher.dispatch([(c.id, c.name, c.args) for c in allowed])
-        for item in dispatched:
-            call = next(c for c in allowed if c.id == item.tool_call_id)
-            result = item.result
-            access.record(call.args, result.meta, ok=not result.failed)
-            text = (result.content or result.error or "")[: self._limits.max_observation_chars]
-            if item.trust == "untrusted":
-                text = observation_envelope(call.name, item.trust, text)
-            out[call.id] = _tool_message(call, text)
-            await self._say(
-                "subagent.tool",
-                {
-                    "step": step,
-                    "tool": call.name,
-                    "ok": not result.failed,
-                    "duration_ms": result.duration_ms,
-                    "untrusted": item.trust == "untrusted",
-                    "summary": _digest(result.failed, result.content or result.error or ""),
-                },
-            )
-        return [out[c.id] for c in calls]
+                item = (await self._dispatcher.dispatch([(call.id, call.name, call.args)]))[0]
+                result = item.result
+                access.record(call.args, result.meta, ok=not result.failed)
+                # Full output is retained independently of the bounded model observation.
+                child.observations.append(
+                    {
+                        "step": step,
+                        "call": call.to_dict(),
+                        "result": result.model_dump(mode="json"),
+                        "trust": item.trust,
+                    }
+                )
+                text = (result.content or result.error or "")[: self._limits.max_observation_chars]
+                if item.trust == "untrusted":
+                    text = observation_envelope(call.name, item.trust, text)
+                child.messages.append(_tool_message(call, text))
+                save()  # Commit each completed call before events or another external operation.
+                await self._say(
+                    "subagent.tool",
+                    {
+                        "step": step,
+                        "tool": call.name,
+                        "ok": not result.failed,
+                        "duration_ms": result.duration_ms,
+                        "untrusted": item.trust == "untrusted",
+                        "summary": _digest(result.failed, result.content or result.error or ""),
+                    },
+                )
+            save()
+
+        # Preserve write order; independent reads finish and save separately.
+        pending: list[ToolCall] = []
+
+        async def flush() -> None:
+            if pending:
+                await asyncio.gather(*(execute(call) for call in pending))
+                pending.clear()
+
+        for call in calls:
+            if call.name in self._policy.read_only_tools:
+                pending.append(call)
+            else:
+                await flush()
+                await execute(call)
+        await flush()
+
+    def _intermediate(self, messages: Sequence[Message], warnings: list[str]) -> RawSubagentReport:
+        observations = [
+            message
+            for message in messages
+            if message.role in ("tool", "assistant") and message.content.strip()
+        ]
+        if not observations:
+            return RawSubagentReport()
+        warnings.append("未获得结构化最终结论，返回已保存的中间观察；不能当作已完成")
+        return RawSubagentReport(
+            findings=[
+                RawSubFinding(statement=f"中间观察 [{m.name or m.role}]：{m.content}")
+                for m in observations[-self._limits.report.max_findings :]
+            ],
+            unresolved=["需要继续调查并核对原始证据；完整记录可通过返回的 artifact_id 回读"],
+        )
 
     async def _finalise(
         self, messages: Sequence[Message], budget: ChildUsage, warnings: list[str]
@@ -245,7 +340,7 @@ class SubagentRunner:
             return RawSubagentReport()
         budget.add_tokens(result.usage.total_tokens)
         if isinstance(result, Degraded):
-            warnings.append("提炼结果无法解析，已丢弃")
+            warnings.append("提炼结果无法解析，保留中间观察")
             return RawSubagentReport()
         return result.value
 

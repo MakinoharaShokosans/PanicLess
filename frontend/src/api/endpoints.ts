@@ -20,6 +20,7 @@ import type {
   SkillInfo,
   SkillSource,
   Task,
+  TaskMessage,
   ToolInfo,
   TreeNode,
   Turn,
@@ -112,6 +113,10 @@ function createApi(client: HttpClient = http) {
         },
       ) => client.post<Task>(`/sessions/${enc(sessionId)}/tasks`, body),
       get: (id: string) => client.get<Task>(`/tasks/${enc(id)}`),
+      sendMessage: (id: string, content: string) =>
+        client.post<TaskMessage>(`/tasks/${enc(id)}/messages`, { content }),
+      messages: (id: string) =>
+        client.get<TaskMessage[]>(`/tasks/${enc(id)}/messages`),
       approve: (id: string, approvalId: string, decision: 'once' | 'always') =>
         client.post<DecisionResult>(`/tasks/${enc(id)}/approve`, {
           approval_id: approvalId,

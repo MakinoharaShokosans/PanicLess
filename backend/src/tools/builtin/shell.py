@@ -67,13 +67,15 @@ class BashTool(AgentTool):
         task_id: str,
         default_timeout_sec: float,
         max_timeout_sec: float,
+        output_max_bytes: int | None = None,
     ) -> None:
         self._client = client
         self._workspace_id = workspace_id
         self._workspace_root = workspace_root
         self._task_id = task_id
-        self._default = default_timeout_sec
+        self._default = min(default_timeout_sec, max_timeout_sec)
         self._max = max_timeout_sec
+        self._output_max_bytes = output_max_bytes
         self.timeout_sec = max_timeout_sec + _DEADLINE_MARGIN_SEC
         #: 只用于 sidecar 的日志命名，与编排层的步号无关
         self._steps = itertools.count(1)
@@ -90,8 +92,9 @@ class BashTool(AgentTool):
             "step_id": next(self._steps),
             "command": command,
         }
-        if timeout is not None:
-            payload["timeout_sec"] = timeout
+        payload["timeout_sec"] = timeout or self._default
+        if self._output_max_bytes is not None:
+            payload["output_max_bytes"] = self._output_max_bytes
         try:
             reply = await self._client.post_json(
                 _EXECUTE,

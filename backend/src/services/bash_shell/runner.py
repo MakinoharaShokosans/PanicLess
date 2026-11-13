@@ -85,6 +85,7 @@ async def run_command(
     log_path: Path,
     limits: RunLimits,
     distill: DistillLimits,
+    output_max_bytes: int | None = None,
 ) -> RunResult:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -125,12 +126,27 @@ async def run_command(
     code = process.returncode
     failed = code != 0
     out_d, err_d = out.finish(failed=failed), err.finish(failed=failed)
+    stdout, stderr = out_d.text, err_d.text
+    truncated = out_d.truncated or err_d.truncated
+    if output_max_bytes is not None:
+        stdout_bytes, stderr_bytes = stdout.encode(), stderr.encode()
+        if len(stdout_bytes) + len(stderr_bytes) > output_max_bytes:
+            # 两路都有输出时保留 stderr 的份额，避免错误信息被 stdout 挤掉。
+            stderr_budget = (
+                min(len(stderr_bytes), output_max_bytes // 2) if stdout else output_max_bytes
+            )
+            stderr = stderr_bytes[:stderr_budget].decode("utf-8", errors="ignore")
+            stdout = stdout_bytes[: output_max_bytes - len(stderr.encode())].decode(
+                "utf-8", errors="ignore"
+            )
+            truncated = True
+        truncated |= out.total_bytes + err.total_bytes > output_max_bytes
     return RunResult(
         status=_status(code, timed_out),
         exit_code=code,
-        stdout=out_d.text,
-        stderr=err_d.text,
-        truncated=out_d.truncated or err_d.truncated,
+        stdout=stdout,
+        stderr=stderr,
+        truncated=truncated,
         artifact_path=str(log_path),
         elapsed_ms=round((time.monotonic() - started) * 1000),
         timed_out=timed_out,

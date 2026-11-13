@@ -131,12 +131,23 @@ class TaskCompactor:
         previous = state.stream_summary or "（还没有）"
         plan = "\n".join(f"- [{p.status}] {p.title}" for p in state.plan) or "（无）"
         notes = "\n".join(f"- {f}" for f in state.facts) or "（无）"
+        excluded = (
+            "\n".join(
+                f"- {f.action}；反证：{f.failure_reason}；结论：{f.conclusion}"
+                for f in state.failed_attempts
+            )
+            or "（无）"
+        )
         log = wrap(
             "task_log", _render(chunk, self._cfg.input_max_chars), source="agent", trust="untrusted"
         )
+        evidence = ", ".join(state.artifacts) or "原始 transcript，可用 read_task_record 回读"
         return (
             f"已有摘要：\n{previous}\n\n要并入的步骤记录（按时间顺序）：\n{log}\n\n"
             f"智能体当前的计划（已另外保存，不必重复）：\n{plan}\n\n笔记（同上）：\n{notes}\n\n"
+            f"已排除假设/失败尝试（独立保存，不可改写为成功）：\n{excluded}\n\n"
+            f"原始目标：{state.task_goal}\n"
+            f"证据出处：{evidence}\n"
             f"摘要不超过 {self._cfg.summary_max_chars} 字符。"
         )
 

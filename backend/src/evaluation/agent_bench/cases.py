@@ -25,7 +25,9 @@ CHECK_KINDS: Final = frozenset(
     }
 )
 PERMISSION_LEVELS: Final = frozenset({"read_only", "workspace_write", "full_permissions"})
-TASK_STATUSES: Final = frozenset({"succeeded", "terminated", "failed", "cancelled"})
+TASK_STATUSES: Final = frozenset(
+    {"succeeded", "partial", "needs_input", "blocked", "terminated", "failed", "cancelled"}
+)
 
 
 @dataclass(frozen=True, slots=True)

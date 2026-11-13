@@ -47,6 +47,7 @@ from agent_runtime.runtime.overrides import (
 from agent_runtime.runtime.run import RunnerDeps
 from agent_runtime.runtime.runner import TaskRunner
 from agent_runtime.runtime.service import TaskService
+from agent_runtime.runtime.terminal import RuntimeTerminal
 from agent_runtime.skills import SkillRegistry
 from baseagent_config import LoadedSettings
 from mcps import McpManager
@@ -202,6 +203,7 @@ class Application:
 
     async def aclose(self) -> None:
         await self.runner.shutdown()
+        await self.factory.retrieval.aclose()
         if self.mcp is not None:
             await self.mcp.aclose()  # 先于存储关闭：回收全部 MCP 子进程
         await self.shell.aclose()
@@ -343,6 +345,14 @@ class Application:
             redactor=self.redactor,
             home=Path(os.path.expanduser("~")),
             workspaces_dir=self.loaded.paths.workspaces_dir,
+            backups_dir=self.loaded.home / "backups",
+            terminal=RuntimeTerminal(
+                settings=self.loaded.settings,
+                memory=self.memory,
+                runner=self.runner,
+                shell=self.shell,
+                redactor=self.redactor,
+            ),
             introspection=Introspection(
                 skills=self.factory.skill_listing,
                 tools=self.factory.tool_listing,

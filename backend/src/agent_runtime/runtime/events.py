@@ -205,6 +205,9 @@ class TaskEvents:
         changed = observed.get("changed_files")
         if isinstance(changed, list) and changed:
             payload["changed_files"] = changed
+        backup = observed.get("backup")
+        if isinstance(backup, dict):
+            payload["backup"] = self._redactor.value(backup)
         await self._hub.emit(self._task_id, "tool.result", payload)
         return ok
 
@@ -351,6 +354,14 @@ class LifecycleEvents:
             "task.finished",
             {
                 "status": snapshot.status,
+                "conclusion": redactor.value(state.conclusion.model_dump(mode="json"))
+                if state and state.conclusion
+                else None,
+                "verification_records": [
+                    redactor.value(r.model_dump(mode="json")) for r in state.verification_records
+                ]
+                if state
+                else [],
                 "session_id": state.session_id if state else "",
                 "workspace_id": state.workspace_id if state else "",
                 "termination_reason": redactor.text(snapshot.reason),

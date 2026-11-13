@@ -22,7 +22,9 @@ import { Button, IconButton, Modal } from '../../components/ui/primitives';
 import { queueOf, useQueueStore } from '../../stores/useQueueStore';
 import { useUiStore } from '../../stores/useUiStore';
 import { useCockpitStore } from '../../stores/useCockpitStore';
+import { useAppStore } from '../../stores/useAppStore';
 import type { PermissionLevel } from '../../types/api';
+import { TERMINAL_STATUSES } from '../../types/api';
 import { cn, formatTokens } from '../../utils/text';
 
 const AUTO = '__auto__';
@@ -167,6 +169,10 @@ export function Composer({
 }) {
   const phone = useUiStore((s) => s.phone);
   const openCard = useUiStore((s) => s.openCard);
+  const run = useAppStore((s) => (s.runSession === sessionId ? s.run : null));
+  const sendTaskMessage = useAppStore((s) => s.sendTaskMessage);
+  const isRunningTask = Boolean(run && !TERMINAL_STATUSES.includes(run.status));
+
   const draftKey = `linuxops.draft.${sessionId}`;
   const [text, setText] = useState(() => {
     try {
@@ -209,8 +215,22 @@ export function Composer({
   }, [text]);
 
   async function send(message: string, confirmed: boolean) {
-    if (busy) enqueue(sessionId, message, permissionLevel);
-    else await onSubmit(message, permissionLevel, confirmed);
+    if (isRunningTask && run) {
+      const res = await sendTaskMessage(run.taskId, message);
+      if (res.ok) {
+        setText('');
+      }
+      return;
+    }
+    if (busy) {
+      enqueue(sessionId, message, permissionLevel);
+    } else {
+      if (danger && !confirmed) {
+        setAsking(message);
+        return;
+      }
+      await onSubmit(message, permissionLevel, confirmed);
+    }
     setText('');
     setAsking(null);
   }
@@ -218,7 +238,7 @@ export function Composer({
   function submit() {
     const message = text.trim();
     if (!message) return;
-    if (danger) setAsking(message);
+    if (danger && !isRunningTask) setAsking(message);
     else void send(message, false);
   }
 
@@ -310,13 +330,31 @@ export function Composer({
             <span>高危系统提权模式 (PRIVILEGED) · 所有系统级命令将直接执行 (高危审计)</span>
           </div>
         )}
+        {isRunningTask && (
+          <div className="mb-1.5 flex items-center gap-1.5 px-2.5 py-1 text-[10.5px] text-mute border-b border-ink/5 dark:border-white/5 bg-accent/[0.03] rounded-t-[18px]">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent animate-pulse" />
+            <span>
+              {run?.status === 'waiting_for_approval'
+                ? '任务正在等待审批中：补充纠正信息将排队进入收件箱，审批继续后在下一次模型调用前合入。当前工具不会被立即中断；发送消息不代表恢复或批准。'
+                : '任务运行中：补充纠正信息将排队进入收件箱，在下一次模型调用前合入。当前执行中的工具不会被立即中断；发送消息不代表批准操作。'}
+            </span>
+          </div>
+        )}
         <textarea
           ref={area}
           aria-label="消息"
           rows={1}
           maxLength={20000}
           value={text}
-          placeholder={busy ? '排队下一条消息' : '消息'}
+          placeholder={
+            isRunningTask
+              ? run?.status === 'waiting_for_approval'
+                ? '补充纠正信息（审批等待中，将在下轮模型调用前处理）...'
+                : '补充纠正信息（如：刚才端口说错了，是 8081）...'
+              : busy
+                ? '排队下一条消息'
+                : '消息'
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
@@ -355,7 +393,7 @@ export function Composer({
           )}
           <IconButton
             type="submit"
-            label={busy ? '加入队列' : '发送'}
+            label={isRunningTask ? '发送补充消息' : busy ? '加入队列' : '发送'}
             hint="Enter"
             side="top"
             disabled={!ready}
@@ -366,7 +404,13 @@ export function Composer({
                 : 'bg-ink/10 text-mute/50',
             )}
           >
-            {busy ? <ListPlus size={17} /> : <ArrowUp size={18} strokeWidth={2.5} />}
+            {isRunningTask ? (
+              <ArrowUp size={18} strokeWidth={2.5} />
+            ) : busy ? (
+              <ListPlus size={17} />
+            ) : (
+              <ArrowUp size={18} strokeWidth={2.5} />
+            )}
           </IconButton>
         </div>
       </form>

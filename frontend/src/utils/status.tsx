@@ -1,4 +1,4 @@
-import { Check, Clock, Loader2, Square, X } from 'lucide-react';
+import { AlertCircle, Ban, Check, Clock, HelpCircle, Loader2, Square, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { ConnectionState } from '../api/sse';
 import type { TaskStatus } from '../types/api';
@@ -29,8 +29,14 @@ export function statusMeta(status: TaskStatus | string): StatusMeta {
       return { label: '等待审批', tone: 'amber', icon: <HandGlyph size={14} />, live: false };
     case 'succeeded':
       return { label: '已完成', tone: 'green', icon: <CheckDraw size={14} />, live: false };
+    case 'partial':
+      return { label: '部分完成', tone: 'amber', icon: <AlertCircle size={14} />, live: false };
+    case 'needs_input':
+      return { label: '需要补充信息', tone: 'blue', icon: <HelpCircle size={14} />, live: false };
+    case 'blocked':
+      return { label: '受阻', tone: 'red', icon: <Ban size={14} />, live: false };
     case 'failed':
-      return { label: '失败', tone: 'red', icon: <CrossGlyph size={14} />, live: false };
+      return { label: '运行失败', tone: 'red', icon: <CrossGlyph size={14} />, live: false };
     case 'cancelled':
       return { label: '已取消', tone: 'slate', icon: <CrossGlyph size={14} />, live: false };
     case 'terminated':
@@ -73,12 +79,45 @@ export function MinimalStatusMark({
       </span>
     );
   }
+  if (status === 'partial') {
+    return (
+      <span
+        className={cn('inline-flex shrink-0 items-center justify-center text-warn', className)}
+        title="部分完成"
+        aria-label="部分完成"
+      >
+        <AlertCircle size={15} />
+      </span>
+    );
+  }
+  if (status === 'needs_input') {
+    return (
+      <span
+        className={cn('inline-flex shrink-0 items-center justify-center text-accent', className)}
+        title="需要补充信息"
+        aria-label="需要补充信息"
+      >
+        <HelpCircle size={15} />
+      </span>
+    );
+  }
+  if (status === 'blocked') {
+    return (
+      <span
+        className={cn('inline-flex shrink-0 items-center justify-center text-bad', className)}
+        title="受阻"
+        aria-label="受阻"
+      >
+        <Ban size={15} />
+      </span>
+    );
+  }
   if (status === 'failed') {
     return (
       <span
         className={cn('inline-flex shrink-0 items-center justify-center text-bad', className)}
-        title="失败"
-        aria-label="失败"
+        title="运行失败"
+        aria-label="运行失败"
       >
         <X size={16} strokeWidth={2.5} />
       </span>
@@ -92,6 +131,17 @@ export function MinimalStatusMark({
         aria-label="已取消"
       >
         <Square size={12} fill="currentColor" />
+      </span>
+    );
+  }
+  if (status === 'terminated') {
+    return (
+      <span
+        className={cn('inline-flex shrink-0 items-center justify-center text-warn', className)}
+        title="已终止"
+        aria-label="已终止"
+      >
+        <GuardGlyph size={15} />
       </span>
     );
   }
